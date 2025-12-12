@@ -1,0 +1,16 @@
+./test*.py
+.DS_Store
+.idea/*
+.mypy_cache
+.pytest_cache/
+.venv
+*.pyc
+*.pyd
+*.so
+*.sw[op]
+**.profiles/**
+**/__pycache__/
+**/.env.local
+**/.run/*
+**/node_modules
+*/.diffs/**
