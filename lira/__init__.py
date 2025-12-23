@@ -5,6 +5,8 @@ Core components for the Shimmer language model.
 
 from .layers import RMSNorm, RotaryEmbedding, Attention, SwiGLU, TransformerBlock, RefineBlock
 from .canvas import LatentCanvasConfig, LatentCanvasModel, count_parameters
+from .mamba import MambaConfig, MambaBlock, MambaLayer, HybridBlock, HybridRefineBlock
+from .hybrid import HybridConfig, HybridShimmer, GlobalAttentionLayer, GlobalCoherenceBlock, count_global_parameters
 
 # FP8 support (optional - graceful fallback if not available)
 try:
@@ -31,10 +33,22 @@ __all__ = [
     "SwiGLU",
     "TransformerBlock",
     "RefineBlock",
+    # Mamba / Hybrid layers
+    "MambaConfig",
+    "MambaBlock",
+    "MambaLayer",
+    "HybridBlock",
+    "HybridRefineBlock",
     # Model
     "LatentCanvasConfig",
     "LatentCanvasModel",
     "count_parameters",
+    # Hybrid Shimmer (Global Coherence)
+    "HybridConfig",
+    "HybridShimmer",
+    "GlobalAttentionLayer",
+    "GlobalCoherenceBlock",
+    "count_global_parameters",
     # FP8 (if available)
     "FP8Config",
     "FP8Context",

@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from .layers import RMSNorm, RefineBlock
+from .mamba import HybridRefineBlock
 
 
 @dataclass
@@ -30,6 +31,11 @@ class LatentCanvasConfig:
 
     # Refinement settings
     num_refine_steps: int = 1  # K: how many times to apply RefineBlock
+
+    # Hybrid Mamba settings
+    hybrid_mode: str = None  # None, "attention", "mamba", "parallel", "interleaved", "adaptive"
+    mamba_ratio: float = 0.75  # For interleaved/adaptive: ratio of Mamba layers
+    state_size: int = 16  # Mamba state dimension
 
     # Special tokens
     mask_token_id: int = field(default=-1)  # Set to vocab_size if -1
@@ -72,12 +78,26 @@ class LatentCanvasModel(nn.Module):
         self.mask_embed = nn.Parameter(torch.randn(config.hidden_size) * 0.02)
 
         # The refinement block (applied K times)
-        self.refine_block = RefineBlock(
-            config.hidden_size,
-            config.num_heads,
-            config.num_layers,
-            config.max_seq_len
-        )
+        # Use HybridRefineBlock if hybrid_mode is set, otherwise standard RefineBlock
+        if config.hybrid_mode:
+            self.refine_block = HybridRefineBlock(
+                config.hidden_size,
+                config.num_heads,
+                num_layers=config.num_layers,
+                mode=config.hybrid_mode,
+                mamba_ratio=config.mamba_ratio,
+                state_size=config.state_size,
+                max_seq_len=config.max_seq_len,
+            )
+            self.use_hybrid = True
+        else:
+            self.refine_block = RefineBlock(
+                config.hidden_size,
+                config.num_heads,
+                config.num_layers,
+                config.max_seq_len
+            )
+            self.use_hybrid = False
 
         # Output heads
         self.token_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
@@ -133,7 +153,11 @@ class LatentCanvasModel(nn.Module):
         intermediates = []
 
         for step in range(num_steps):
-            z = self.refine_block(z)
+            # Pass iteration info for adaptive hybrid mode
+            if self.use_hybrid:
+                z = self.refine_block(z, iteration=step, total_iterations=num_steps)
+            else:
+                z = self.refine_block(z)
             if return_intermediates:
                 intermediates.append(z.clone())
 
