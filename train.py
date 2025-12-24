@@ -112,6 +112,8 @@ def parse_args():
 
     # System
     parser.add_argument("--device", type=str, default="cuda")
+    parser.add_argument("--gpu", type=int, default=0,
+                        help="GPU index to use (0, 1, etc.). Use -1 for CPU.")
     parser.add_argument("--fp16", action="store_true")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--compile", action="store_true",
@@ -541,7 +543,17 @@ def train(args):
             print(f"  Warning: Could not load checkpoint: {e}")
             print("  Starting with fresh weights")
 
-    device = torch.device(args.device if torch.cuda.is_available() else "cpu")
+    # Setup device with GPU selection
+    if args.gpu == -1 or not torch.cuda.is_available():
+        device = torch.device("cpu")
+        print(f"\nUsing CPU")
+    else:
+        device = torch.device(f"cuda:{args.gpu}")
+        torch.cuda.set_device(args.gpu)  # Set default for tensors created without explicit device
+        gpu_name = torch.cuda.get_device_name(args.gpu)
+        gpu_mem = torch.cuda.get_device_properties(args.gpu).total_memory / 1024**3
+        print(f"\nUsing GPU {args.gpu}: {gpu_name} ({gpu_mem:.1f}GB)")
+
     model = model.to(device)
 
     # Optional: compile model for faster training (PyTorch 2.0+)
