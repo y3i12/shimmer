@@ -280,7 +280,13 @@ def main():
 
     # Create model and load weights
     model = create_model(config, model_type)
-    model.load_state_dict(checkpoint["model_state_dict"])
+
+    # Handle state dict from compiled model (torch.compile adds _orig_mod. prefix)
+    state_dict = checkpoint["model_state_dict"]
+    if any(k.startswith("_orig_mod.") for k in state_dict.keys()):
+        state_dict = {k.replace("_orig_mod.", ""): v for k, v in state_dict.items()}
+
+    model.load_state_dict(state_dict)
     model = model.to(args.device)
     model.eval()
 

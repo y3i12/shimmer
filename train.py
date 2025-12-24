@@ -536,6 +536,12 @@ def train(args):
 
         # Handle loading LIRA checkpoint into Dialectic (or vice versa)
         state_dict = checkpoint["model_state_dict"]
+
+        # Handle state dict from compiled model (torch.compile adds _orig_mod. prefix)
+        if any(k.startswith("_orig_mod.") for k in state_dict.keys()):
+            state_dict = {k.replace("_orig_mod.", ""): v for k, v in state_dict.items()}
+            print("  Stripped _orig_mod. prefix from compiled checkpoint")
+
         try:
             model.load_state_dict(state_dict, strict=False)
             print("  Loaded with strict=False (some keys may be missing/extra)")
