@@ -127,8 +127,9 @@ class LatentCanvasModel(nn.Module):
         z = self.embed_tokens(input_ids)
 
         # Replace masked positions with learnable mask embedding
-        mask_positions = (input_ids == self.config.mask_token_id)
-        z[mask_positions] = self.mask_embed
+        # Use torch.where for torch.compile() compatibility (avoids dynamic indexing)
+        mask_positions = (input_ids == self.config.mask_token_id).unsqueeze(-1)  # [B, L, 1]
+        z = torch.where(mask_positions, self.mask_embed, z)
 
         return z
 

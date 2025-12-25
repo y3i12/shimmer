@@ -124,7 +124,10 @@ def parse_args():
 
     # Checkpoints
     parser.add_argument("--checkpoint_dir", type=str, default="checkpoints")
-    parser.add_argument("--load_checkpoint", type=str, default=None)
+    parser.add_argument("--load_checkpoint", type=str, default=None,
+                        help="Load model weights from checkpoint (for fine-tuning or resuming)")
+    parser.add_argument("--resume", action="store_true",
+                        help="Resume training: restore optimizer, scheduler, epoch (use with --load_checkpoint)")
     parser.add_argument("--checkpoint_name", type=str, default=None,
                         help="Custom checkpoint name prefix")
     parser.add_argument("--eval_every", type=int, default=180)
@@ -530,6 +533,7 @@ def train(args):
         print(f"  Coherence head: {param_info['coherence']:,}")
 
     # Load checkpoint if specified
+    checkpoint = None
     if args.load_checkpoint:
         print(f"Loading checkpoint: {args.load_checkpoint}")
         checkpoint = torch.load(args.load_checkpoint, map_location="cpu", weights_only=False)
@@ -544,10 +548,11 @@ def train(args):
 
         try:
             model.load_state_dict(state_dict, strict=False)
-            print("  Loaded with strict=False (some keys may be missing/extra)")
+            print("  Loaded model weights (strict=False)")
         except Exception as e:
             print(f"  Warning: Could not load checkpoint: {e}")
             print("  Starting with fresh weights")
+            checkpoint = None  # Don't try to resume if model load failed
 
     # Setup device with GPU selection
     if args.gpu == -1 or not torch.cuda.is_available():
@@ -612,6 +617,54 @@ def train(args):
     # Mixed precision
     scaler = GradScaler('cuda') if args.fp16 else None
 
+    # Resume training state if requested
+    start_epoch = 0
+    resumed_global_step = 0
+    resumed_best_val_loss = float("inf")
+    if args.resume and checkpoint is not None:
+        print("\nResuming training state from checkpoint...")
+
+        # Restore optimizer state
+        if "optimizer_state_dict" in checkpoint:
+            try:
+                optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+                print("  ✓ Restored optimizer state")
+            except Exception as e:
+                print(f"  ⚠ Could not restore optimizer state: {e}")
+
+        # Restore scheduler state
+        if "scheduler_state_dict" in checkpoint:
+            try:
+                scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+                print("  ✓ Restored scheduler state")
+            except Exception as e:
+                print(f"  ⚠ Could not restore scheduler state: {e}")
+
+        # Restore scaler state (for fp16)
+        if scaler and "scaler_state_dict" in checkpoint and checkpoint["scaler_state_dict"]:
+            try:
+                scaler.load_state_dict(checkpoint["scaler_state_dict"])
+                print("  ✓ Restored scaler state")
+            except Exception as e:
+                print(f"  ⚠ Could not restore scaler state: {e}")
+
+        # Restore epoch (continue from next epoch)
+        if "epoch" in checkpoint:
+            start_epoch = checkpoint["epoch"] + 1
+            print(f"  ✓ Resuming from epoch {start_epoch}")
+
+        # Restore global step
+        if "global_step" in checkpoint:
+            resumed_global_step = checkpoint["global_step"]
+            print(f"  ✓ Resuming from global step {resumed_global_step}")
+
+        # Restore best val loss
+        if "best_val_loss" in checkpoint:
+            resumed_best_val_loss = checkpoint["best_val_loss"]
+            print(f"  ✓ Best val loss so far: {resumed_best_val_loss / args.batch_size:.4f}")
+    elif args.resume and checkpoint is None:
+        print("\n⚠ --resume specified but no checkpoint loaded, starting fresh")
+
     # Checkpoint naming
     if args.checkpoint_name:
         ckpt_prefix = args.checkpoint_name
@@ -625,20 +678,24 @@ def train(args):
     effective_batch_size = args.batch_size * accum_steps
 
     # Training loop
-    best_val_loss = float("inf")
-    global_step = 0
+    best_val_loss = resumed_best_val_loss
+    global_step = resumed_global_step
     epoch_loss = 0
     start_time = datetime.datetime.now()
     last_log = datetime.datetime.now()
     last_val = datetime.datetime.now()
-    print(f"\nStarting training: {args.epochs} epochs, {len(train_loader)} batches/epoch")
+
+    if start_epoch > 0:
+        print(f"\nResuming training from epoch {start_epoch}: {args.epochs - start_epoch} epochs remaining, {len(train_loader)} batches/epoch")
+    else:
+        print(f"\nStarting training: {args.epochs} epochs, {len(train_loader)} batches/epoch")
     print(f"  Gradient accumulation: {accum_steps} steps → effective batch size: {effective_batch_size}")
 
-    last_global_step_log = 0
+    last_global_step_log = global_step
     last_validation_log = 0
     average_loss_log = 0
 
-    for epoch in range(args.epochs):
+    for epoch in range(start_epoch, args.epochs):
         epoch_start = time.time()
         # epoch_loss = 0
         doc = 0
@@ -754,9 +811,14 @@ def train(args):
                     best_val_loss = val_metrics["val_loss"]
                     torch.save({
                         "model_state_dict": model.state_dict(),
+                        "optimizer_state_dict": optimizer.state_dict(),
+                        "scheduler_state_dict": scheduler.state_dict(),
+                        "scaler_state_dict": scaler.state_dict() if scaler else None,
+                        "epoch": epoch,
                         "config": config,
                         "args": args,
                         "global_step": global_step,
+                        "best_val_loss": best_val_loss,
                         "val_loss": best_val_loss / args.batch_size,
                         "model_type": args.model,
                         "dataset": args.dataset,
@@ -775,9 +837,14 @@ def train(args):
 
         torch.save({
             "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+            "scheduler_state_dict": scheduler.state_dict(),
+            "scaler_state_dict": scaler.state_dict() if scaler else None,
+            "epoch": epoch,
             "config": config,
             "args": args,
             "global_step": global_step,
+            "best_val_loss": best_val_loss,
             "val_loss": best_val_loss / args.batch_size,
             "model_type": args.model,
             "dataset": args.dataset,
@@ -800,9 +867,14 @@ def train(args):
     # Save final checkpoint
     torch.save({
         "model_state_dict": model.state_dict(),
+        "optimizer_state_dict": optimizer.state_dict(),
+        "scheduler_state_dict": scheduler.state_dict(),
+        "scaler_state_dict": scaler.state_dict() if scaler else None,
+        "epoch": args.epochs - 1,
         "config": config,
         "args": args,
         "global_step": global_step,
+        "best_val_loss": best_val_loss,
         "model_type": args.model,
         "dataset": args.dataset,
     }, f"{args.checkpoint_dir}/{ckpt_prefix}_final.pt")

@@ -28,7 +28,7 @@ from lira.dialectic import DialecticCanvas, DialecticConfig
 from data import get_default_prompt, list_datasets
 
 
-def load_tokenizer(vocab_size: int, tokenizer_dir: str = "tokenizers"):
+def load_tokenizer(vocab_size: int, tokenizer_path: str = "tokenizers/shimmer_blend_10000.model"):
     """Load the appropriate tokenizer based on vocab_size."""
     if vocab_size == 0 or vocab_size >= 50000:
         from transformers import AutoTokenizer
@@ -39,8 +39,7 @@ def load_tokenizer(vocab_size: int, tokenizer_dir: str = "tokenizers"):
         return tokenizer, "gpt2"
     else:
         from lira.tokenizer import ShimmerTokenizer
-        tokenizer_path = Path(tokenizer_dir) / f"shimmer_blend_{vocab_size}.model"
-        if not tokenizer_path.exists():
+        if not Path(tokenizer_path).exists():
             print(f"ERROR: Custom tokenizer not found at {tokenizer_path}")
             print("You may need to train with the same vocab_size first to create the tokenizer.")
             sys.exit(1)
@@ -229,7 +228,7 @@ def main():
                         help="Device to use (cuda/cpu)")
     parser.add_argument("--verbose", action="store_true",
                         help="Print detailed generation info")
-    parser.add_argument("--tokenizer_dir", type=str, default="tokenizers",
+    parser.add_argument("--tokenizer", type=str, default="tokenizers/shimmer_blend_10000.model",
                         help="Directory containing custom tokenizers")
 
     args = parser.parse_args()
@@ -276,7 +275,7 @@ def main():
               f"confidence_threshold={config.confidence_threshold}")
 
     # Load tokenizer
-    tokenizer, tokenizer_type = load_tokenizer(config.vocab_size, args.tokenizer_dir)
+    tokenizer, tokenizer_type = load_tokenizer(config.vocab_size, args.tokenizer)
 
     # Create model and load weights
     model = create_model(config, model_type)
