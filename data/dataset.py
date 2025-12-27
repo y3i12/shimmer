@@ -15,6 +15,60 @@ from typing import Optional
 import random
 
 
+class GPTDataset(Dataset):
+    """
+    Dataset for GPT-style autoregressive language modeling.
+
+    For each sample:
+    - input_ids: token sequence
+    - labels: shifted by 1 (next token prediction)
+    """
+
+    def __init__(
+        self,
+        token_ids: list[list[int]],
+        max_seq_len: int = 128,
+        pad_token_id: int = 0,
+    ):
+        self.token_ids = token_ids
+        self.max_seq_len = max_seq_len
+        self.pad_token_id = pad_token_id
+
+    def __len__(self):
+        return len(self.token_ids)
+
+    def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
+        tokens = self.token_ids[idx]
+
+        # Truncate if needed
+        if len(tokens) > self.max_seq_len:
+            tokens = tokens[:self.max_seq_len]
+
+        seq_len = len(tokens)
+
+        # Pad if needed
+        if seq_len < self.max_seq_len:
+            padding = [self.pad_token_id] * (self.max_seq_len - seq_len)
+            tokens = tokens + padding
+
+        input_ids = torch.tensor(tokens, dtype=torch.long)
+
+        # Labels: same as input (loss computed with shift inside model)
+        # Use -100 for padding positions to ignore in loss
+        labels = input_ids.clone()
+        labels[seq_len:] = -100  # Ignore padding in loss
+
+        # Attention mask (1 for real tokens, 0 for padding)
+        attention_mask = torch.zeros(self.max_seq_len, dtype=torch.bool)
+        attention_mask[:seq_len] = True
+
+        return {
+            "input_ids": input_ids,
+            "labels": labels,
+            "attention_mask": attention_mask,
+        }
+
+
 class LatentCanvasDataset(Dataset):
     """
     Dataset with LLaDA-style variable corruption.
@@ -560,13 +614,34 @@ def create_dataloader(
     shuffle: bool = True,
     num_workers: int = 0,
 ) -> DataLoader:
-    """Create a DataLoader for training."""
+    """Create a DataLoader for LIRA/masked LM training."""
     dataset = LatentCanvasDataset(
         token_ids=token_ids,
         mask_token_id=mask_token_id,
         max_seq_len=max_seq_len,
         min_mask_ratio=min_mask_ratio,
         max_mask_ratio=max_mask_ratio,
+    )
+    return DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        num_workers=num_workers,
+        pin_memory=True,
+    )
+
+
+def create_gpt_dataloader(
+    token_ids: list[list[int]],
+    batch_size: int = 32,
+    max_seq_len: int = 128,
+    shuffle: bool = True,
+    num_workers: int = 0,
+) -> DataLoader:
+    """Create a DataLoader for GPT/autoregressive training."""
+    dataset = GPTDataset(
+        token_ids=token_ids,
+        max_seq_len=max_seq_len,
     )
     return DataLoader(
         dataset,

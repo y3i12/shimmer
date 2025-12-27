@@ -38,7 +38,8 @@ def clear_memory():
 from lira import LatentCanvasConfig, LatentCanvasModel, count_parameters
 from lira.dialectic import DialecticConfig, DialecticCanvas
 from lira.hybrid import HybridConfig, HybridShimmer, count_global_parameters
-from data import load_dataset_by_name, create_dataloader, get_default_prompt, list_datasets
+from lira.gpt import GPTConfig, GPTModel, count_gpt_parameters
+from data import load_dataset_by_name, create_dataloader, create_gpt_dataloader, get_default_prompt, list_datasets
 
 
 @dataclass
@@ -103,8 +104,8 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Train Shimmer Models")
 
     # Model selection
-    parser.add_argument("--model", type=str, default="lira", choices=["lira", "dialectic", "hybrid"],
-                        help="Model architecture: lira (original), dialectic (backtracking), or hybrid (global coherence)")
+    parser.add_argument("--model", type=str, default="lira", choices=["lira", "dialectic", "hybrid", "gpt"],
+                        help="Model architecture: lira (original), dialectic (backtracking), hybrid (global coherence), or gpt (autoregressive baseline)")
 
     # Phase selection
     parser.add_argument("--phase", type=int, default=1, choices=[1, 2, 3, 4],
@@ -261,7 +262,16 @@ def setup_phase(args):
 
 def create_model(args, vocab_size: int, mask_token_id: int):
     """Create model based on --model flag."""
-    if args.model == "lira":
+    if args.model == "gpt":
+        config = GPTConfig(
+            vocab_size=vocab_size,
+            hidden_size=args.hidden_size,
+            num_heads=args.num_heads,
+            num_layers=args.num_layers,
+            max_seq_len=args.max_seq_len,
+        )
+        model = GPTModel(config)
+    elif args.model == "lira":
         config = LatentCanvasConfig(
             vocab_size=vocab_size,
             hidden_size=args.hidden_size,
@@ -321,9 +331,20 @@ def compute_loss(
 
     Phase 1-3: Standard reconstruction loss
     Phase 4: Reconstruction + confidence loss
+    GPT: Next-token prediction loss (ignores phase)
     """
     input_ids = batch["input_ids"].to(device)
     labels = batch["labels"].to(device)
+
+    # GPT uses different loss computation
+    if model_type == "gpt":
+        output = model(input_ids, labels=labels)
+        return {
+            "loss": output["loss"],
+            "token_loss": output["loss"].detach(),
+        }
+
+    # LIRA/Dialectic/Hybrid use masked reconstruction
     mask_positions = batch["mask_positions"].to(device)
     mask_ratio = batch["mask_ratio"].to(device)
 
@@ -463,6 +484,7 @@ def evaluate(
     total_correct = 0
     total_masked = 0
     total_backtracks = 0
+    total_tokens = 0
 
     for batch in dataloader:
         result = compute_loss(model, batch, phase, device, model_type, num_refine_steps)
@@ -474,28 +496,47 @@ def evaluate(
         # Accuracy
         input_ids = batch["input_ids"].to(device)
         labels = batch["labels"].to(device)
-        mask_positions = batch["mask_positions"].to(device)
 
-        if model_type == "lira":
+        if model_type == "gpt":
+            # GPT: next-token prediction accuracy
             output = model(input_ids)
-            predictions = output["logits"].argmax(dim=-1)
-        elif model_type == "hybrid":
-            output = model(input_ids, training=False)
-            predictions = output["logits"].argmax(dim=-1)
-        else:  # dialectic
-            output = model(input_ids, num_refine_steps=num_refine_steps)
-            predictions = output["token_logits"].argmax(dim=-1)
+            logits = output["logits"]
+            # Shift for comparison
+            predictions = logits[:, :-1, :].argmax(dim=-1)
+            shifted_labels = labels[:, 1:]
+            # Only count non-padding tokens
+            valid_mask = shifted_labels != -100
+            correct = (predictions == shifted_labels) & valid_mask
+            total_correct += correct.sum().item()
+            total_tokens += valid_mask.sum().item()
+        else:
+            # LIRA/Dialectic/Hybrid: masked prediction accuracy
+            mask_positions = batch["mask_positions"].to(device)
 
-        correct = (predictions == labels) & mask_positions
-        total_correct += correct.sum().item()
-        total_masked += mask_positions.sum().item()
+            if model_type == "lira":
+                output = model(input_ids)
+                predictions = output["logits"].argmax(dim=-1)
+            elif model_type == "hybrid":
+                output = model(input_ids, training=False)
+                predictions = output["logits"].argmax(dim=-1)
+            else:  # dialectic
+                output = model(input_ids, num_refine_steps=num_refine_steps)
+                predictions = output["token_logits"].argmax(dim=-1)
+
+            correct = (predictions == labels) & mask_positions
+            total_correct += correct.sum().item()
+            total_masked += mask_positions.sum().item()
 
     model.train()
 
     metrics = {
         "val_loss": total_loss / len(dataloader),
-        "val_acc": total_correct / max(total_masked, 1) * 100,
     }
+
+    if model_type == "gpt":
+        metrics["val_acc"] = total_correct / max(total_tokens, 1) * 100
+    else:
+        metrics["val_acc"] = total_correct / max(total_masked, 1) * 100
 
     if model_type == "dialectic":
         metrics["avg_backtracks"] = total_backtracks / len(dataloader)
@@ -529,13 +570,25 @@ def generate_samples(
     print("-" * 50)
 
     for i in range(num_samples):
-        if model_type == "lira":
+        if model_type == "gpt":
+            # GPT: autoregressive generation
+            output = model.generate(
+                prompt_tensor,
+                max_new_tokens=gen_length,
+                temperature=0.8,
+                top_k=50,
+                top_p=0.9,
+            )
+            text = tokenizer.decode(output[0].cpu().tolist())
+            iterations = gen_length
+        elif model_type == "lira":
             canvas, history = model.generate_topk(
                 prompt_tensor,
                 gen_length=gen_length,
                 num_steps=max(15, gen_length // 3),
                 temperature=0.8,
             )
+            text = tokenizer.decode(canvas[0].cpu().tolist())
             iterations = len(history)
         elif model_type == "hybrid":
             canvas, history = model.generate_topk(
@@ -544,6 +597,7 @@ def generate_samples(
                 num_steps=max(15, gen_length // 3),
                 temperature=0.8,
             )
+            text = tokenizer.decode(canvas[0].cpu().tolist())
             iterations = len(history)
         else:  # dialectic
             canvas = model.generate_dialectic(
@@ -552,9 +606,9 @@ def generate_samples(
                 num_refine_steps=num_refine_steps,
                 temperature=0.8,
             )
+            text = tokenizer.decode(canvas[0].cpu().tolist())
             iterations = gen_length  # Dialectic does one token per iteration
 
-        text = tokenizer.decode(canvas[0].cpu().tolist())
         print(f"Sample {i+1} ({iterations} iters): {text[:120]}...")
 
     model.train()
@@ -1014,25 +1068,39 @@ def train(args):
         else:
             print("  ⚠ torch.compile not available (requires PyTorch 2.0+)")
 
-    # Create dataloaders
-    train_loader = create_dataloader(
-        train_tokens,
-        mask_token_id=config.mask_token_id,
-        batch_size=args.batch_size,
-        max_seq_len=args.max_seq_len,
-        min_mask_ratio=args.min_mask_ratio,
-        max_mask_ratio=args.max_mask_ratio,
-        shuffle=True,
-    )
-    val_loader = create_dataloader(
-        val_tokens,
-        mask_token_id=config.mask_token_id,
-        batch_size=args.batch_size,
-        max_seq_len=args.max_seq_len,
-        min_mask_ratio=args.min_mask_ratio,
-        max_mask_ratio=args.max_mask_ratio,
-        shuffle=False,
-    )
+    # Create dataloaders (GPT uses different dataloader)
+    if args.model == "gpt":
+        train_loader = create_gpt_dataloader(
+            train_tokens,
+            batch_size=args.batch_size,
+            max_seq_len=args.max_seq_len,
+            shuffle=True,
+        )
+        val_loader = create_gpt_dataloader(
+            val_tokens,
+            batch_size=args.batch_size,
+            max_seq_len=args.max_seq_len,
+            shuffle=False,
+        )
+    else:
+        train_loader = create_dataloader(
+            train_tokens,
+            mask_token_id=config.mask_token_id,
+            batch_size=args.batch_size,
+            max_seq_len=args.max_seq_len,
+            min_mask_ratio=args.min_mask_ratio,
+            max_mask_ratio=args.max_mask_ratio,
+            shuffle=True,
+        )
+        val_loader = create_dataloader(
+            val_tokens,
+            mask_token_id=config.mask_token_id,
+            batch_size=args.batch_size,
+            max_seq_len=args.max_seq_len,
+            min_mask_ratio=args.min_mask_ratio,
+            max_mask_ratio=args.max_mask_ratio,
+            shuffle=False,
+        )
 
     # Optimizer
     optimizer = torch.optim.AdamW(

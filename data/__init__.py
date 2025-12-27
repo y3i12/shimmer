@@ -1,6 +1,8 @@
 from .dataset import (
     LatentCanvasDataset,
+    GPTDataset,
     create_dataloader,
+    create_gpt_dataloader,
     load_tinystories,
     load_everyday_conversations,
     load_bitext_customer_support,
@@ -13,7 +15,9 @@ from .dataset import (
 
 __all__ = [
     "LatentCanvasDataset",
+    "GPTDataset",
     "create_dataloader",
+    "create_gpt_dataloader",
     "load_tinystories",
     "load_everyday_conversations",
     "load_bitext_customer_support",

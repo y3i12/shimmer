@@ -7,6 +7,7 @@ from .layers import RMSNorm, RotaryEmbedding, Attention, SwiGLU, TransformerBloc
 from .canvas import LatentCanvasConfig, LatentCanvasModel, count_parameters
 from .mamba import MambaConfig, MambaBlock, MambaLayer, HybridBlock, HybridRefineBlock
 from .hybrid import HybridConfig, HybridShimmer, GlobalAttentionLayer, GlobalCoherenceBlock, count_global_parameters
+from .gpt import GPTConfig, GPTModel, CausalAttention, GPTBlock, count_gpt_parameters
 
 # FP8 support (optional - graceful fallback if not available)
 try:
@@ -39,10 +40,16 @@ __all__ = [
     "MambaLayer",
     "HybridBlock",
     "HybridRefineBlock",
-    # Model
+    # LIRA Model
     "LatentCanvasConfig",
     "LatentCanvasModel",
     "count_parameters",
+    # GPT Baseline Model
+    "GPTConfig",
+    "GPTModel",
+    "CausalAttention",
+    "GPTBlock",
+    "count_gpt_parameters",
     # Hybrid Shimmer (Global Coherence)
     "HybridConfig",
     "HybridShimmer",

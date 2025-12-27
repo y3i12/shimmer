@@ -35,6 +35,7 @@ except ImportError:
 sys.path.insert(0, str(Path(__file__).parent))
 
 from lira import LatentCanvasModel, LatentCanvasConfig
+from lira.gpt import GPTModel, GPTConfig
 
 
 # ============================================================================
@@ -214,7 +215,8 @@ def decode(tokenizer, tokenizer_type: str, ids: list[int]) -> str:
 def generate_sample(
     model, tokenizer, tokenizer_type, prompt: str,
     max_tokens: int = 50, temperature: float = 0.8,
-    method: str = "topk", device: str = "cuda"
+    method: str = "topk", device: str = "cuda",
+    model_type: str = "lira"
 ) -> tuple[str, dict]:
     """Generate a single sample with metadata."""
     model.eval()
@@ -222,35 +224,52 @@ def generate_sample(
     prompt_ids = encode(tokenizer, tokenizer_type, prompt)
     prompt_tensor = torch.tensor([prompt_ids], device=device)
 
-    if method == "topk":
-        output, history = model.generate_topk(
-            prompt_tensor, max_tokens,
-            num_steps=int(max_tokens*2),
-            temperature=temperature
-        )
-    elif method == "remasking":
-        output, history = model.generate_with_remasking(
-            prompt_tensor, max_tokens,
-            num_steps=int(max_tokens*2),
+    if model_type == "gpt":
+        # GPT: autoregressive generation
+        output = model.generate(
+            prompt_tensor,
+            max_new_tokens=max_tokens,
             temperature=temperature,
-            remask_ratio=0.2,
-            min_confident_ratio=0.3
+            top_k=50,
+            top_p=0.9,
         )
-    else:  # default confidence-based
-        output, history = model.generate(
-            prompt_tensor, max_tokens,
-            num_iterations=int(max_tokens*2),
-            temperature=temperature
-        )
+        generated_ids = output[0].cpu().tolist()
+        generated_text = decode(tokenizer, tokenizer_type, generated_ids)
+        metadata = {
+            "iterations": max_tokens,
+            "prompt_len": len(prompt_ids),
+            "total_len": len(generated_ids),
+        }
+    else:
+        # LIRA: masked generation
+        if method == "topk":
+            output, history = model.generate_topk(
+                prompt_tensor, max_tokens,
+                num_steps=int(max_tokens*2),
+                temperature=temperature
+            )
+        elif method == "remasking":
+            output, history = model.generate_with_remasking(
+                prompt_tensor, max_tokens,
+                num_steps=int(max_tokens*2),
+                temperature=temperature,
+                remask_ratio=0.2,
+                min_confident_ratio=0.3
+            )
+        else:  # default confidence-based
+            output, history = model.generate(
+                prompt_tensor, max_tokens,
+                num_iterations=int(max_tokens*2),
+                temperature=temperature
+            )
 
-    generated_ids = output[0].cpu().tolist()
-    generated_text = decode(tokenizer, tokenizer_type, generated_ids)
-
-    metadata = {
-        "iterations": len(history),
-        "prompt_len": len(prompt_ids),
-        "total_len": len(generated_ids),
-    }
+        generated_ids = output[0].cpu().tolist()
+        generated_text = decode(tokenizer, tokenizer_type, generated_ids)
+        metadata = {
+            "iterations": len(history),
+            "prompt_len": len(prompt_ids),
+            "total_len": len(generated_ids),
+        }
 
     return generated_text, metadata
 
@@ -300,10 +319,22 @@ def calculate_perplexity(
 @torch.no_grad()
 def analyze_confidence(
     model, tokenizer, tokenizer_type,
-    prompts: list[str], device: str = "cuda"
+    prompts: list[str], device: str = "cuda",
+    model_type: str = "lira"
 ) -> dict:
-    """Analyze confidence head behavior."""
+    """Analyze confidence head behavior (LIRA only)."""
     model.eval()
+
+    # GPT doesn't have confidence head
+    if model_type == "gpt":
+        return {
+            "mean_all": 0.0,
+            "std_all": 0.0,
+            "mean_filled": 0.0,
+            "mean_masked": 0.0,
+            "confidence_gap": 0.0,
+            "note": "GPT has no confidence head",
+        }
 
     all_confidence = []
     mask_confidence = []
@@ -340,6 +371,7 @@ def test_coherence(
     device: str = "cuda",
     num_gen_tokens: int = 10,
     use_semantic: bool = True,
+    model_type: str = "lira",
 ) -> dict:
     """
     Test logical coherence of continuations using multi-token generation.
@@ -364,13 +396,21 @@ def test_coherence(
         prompt_ids = encode(tokenizer, tokenizer_type, prompt)
         prompt_tensor = torch.tensor([prompt_ids], device=device)
 
-        # Generate multi-token continuation (LIRA's strength)
-        output, _ = model.generate_topk(
-            prompt_tensor,
-            gen_length=num_gen_tokens,
-            num_steps=num_gen_tokens * 2,
-            temperature=0.7,
-        )
+        # Generate multi-token continuation
+        if model_type == "gpt":
+            output = model.generate(
+                prompt_tensor,
+                max_new_tokens=num_gen_tokens,
+                temperature=0.7,
+                top_k=50,
+            )
+        else:
+            output, _ = model.generate_topk(
+                prompt_tensor,
+                gen_length=num_gen_tokens,
+                num_steps=num_gen_tokens * 2,
+                temperature=0.7,
+            )
 
         # Decode the generated continuation (excluding prompt)
         generated_ids = output[0, len(prompt_ids):].cpu().tolist()
@@ -434,6 +474,7 @@ def test_diversity(
     num_generations: int = 5,
     max_tokens: int = 50,
     device: str = "cuda",
+    model_type: str = "lira",
 ) -> dict:
     """
     Test generation diversity - are outputs varied or repetitive?
@@ -452,12 +493,20 @@ def test_diversity(
 
         generations = []
         for _ in range(num_generations):
-            output, _ = model.generate_topk(
-                prompt_tensor,
-                gen_length=max_tokens,
-                num_steps=max_tokens * 2,
-                temperature=0.9,  # Higher temp for diversity
-            )
+            if model_type == "gpt":
+                output = model.generate(
+                    prompt_tensor,
+                    max_new_tokens=max_tokens,
+                    temperature=0.9,
+                    top_k=50,
+                )
+            else:
+                output, _ = model.generate_topk(
+                    prompt_tensor,
+                    gen_length=max_tokens,
+                    num_steps=max_tokens * 2,
+                    temperature=0.9,  # Higher temp for diversity
+                )
             gen_ids = output[0, len(prompt_ids):].cpu().tolist()
             gen_text = decode(tokenizer, tokenizer_type, gen_ids).lower()
             generations.append(gen_text)
@@ -509,14 +558,13 @@ def test_perplexity(
     num_samples: int = 100,
     mask_ratio: float = 0.3,
     device: str = "cuda",
+    model_type: str = "lira",
 ) -> dict:
     """
-    Calculate MASKED RECONSTRUCTION perplexity on TinyStories validation data.
+    Calculate perplexity on TinyStories validation data.
 
-    Unlike autoregressive perplexity, this measures how well LIRA
-    reconstructs randomly masked tokens - matching its training objective.
-
-    Lower perplexity = better masked language modeling.
+    For LIRA: Masked reconstruction perplexity
+    For GPT: Next-token prediction perplexity (standard)
     """
     model.eval()
 
@@ -528,57 +576,79 @@ def test_perplexity(
     except Exception as e:
         return {"error": f"Could not load TinyStories: {e}"}
 
-    mask_token = model.config.mask_token_id
     total_loss = 0.0
-    total_masked_tokens = 0
+    total_tokens = 0
 
-    for text in texts:
-        ids = encode(tokenizer, tokenizer_type, text)
-        if len(ids) < 10 or len(ids) > 256:
-            continue
+    if model_type == "gpt":
+        # GPT: Next-token prediction perplexity
+        for text in texts:
+            ids = encode(tokenizer, tokenizer_type, text)
+            if len(ids) < 10 or len(ids) > 256:
+                continue
 
-        # Create masked input (LIRA's actual task)
-        input_ids = torch.tensor([ids], device=device)
-        seq_len = input_ids.size(1)
+            input_ids = torch.tensor([ids], device=device)
 
-        # Random mask positions (like training)
-        mask_positions = torch.rand(1, seq_len, device=device) < mask_ratio
-        # Don't mask first/last tokens for stability
-        mask_positions[:, 0] = False
-        mask_positions[:, -1] = False
+            # Forward pass with labels
+            output = model(input_ids, labels=input_ids)
+            loss = output["loss"]
 
-        # Apply mask
-        masked_input = input_ids.clone()
-        masked_input[mask_positions] = mask_token
+            # Count valid tokens (excluding padding)
+            num_tokens = len(ids) - 1  # -1 because of shift
+            total_loss += loss.item() * num_tokens
+            total_tokens += num_tokens
 
-        # Forward pass
-        output = model(masked_input)
-        logits = output["logits"]
+        avg_loss = total_loss / total_tokens if total_tokens > 0 else float('inf')
+        perplexity = np.exp(min(avg_loss, 100))
 
-        # Only measure loss on masked positions
-        masked_logits = logits[mask_positions]  # [num_masked, vocab]
-        masked_labels = input_ids[mask_positions]  # [num_masked]
+        return {
+            "perplexity": perplexity,
+            "avg_loss": avg_loss,
+            "tokens_evaluated": total_tokens,
+            "samples_evaluated": len(texts),
+            "note": "Next-token prediction perplexity (standard GPT)",
+        }
+    else:
+        # LIRA: Masked reconstruction perplexity
+        mask_token = model.config.mask_token_id
 
-        if masked_logits.size(0) > 0:
-            loss = F.cross_entropy(
-                masked_logits,
-                masked_labels,
-                reduction='sum'
-            )
-            total_loss += loss.item()
-            total_masked_tokens += masked_logits.size(0)
+        for text in texts:
+            ids = encode(tokenizer, tokenizer_type, text)
+            if len(ids) < 10 or len(ids) > 256:
+                continue
 
-    avg_loss = total_loss / total_masked_tokens if total_masked_tokens > 0 else float('inf')
-    perplexity = np.exp(min(avg_loss, 100))  # Cap to avoid overflow
+            input_ids = torch.tensor([ids], device=device)
+            seq_len = input_ids.size(1)
 
-    return {
-        "perplexity": perplexity,
-        "avg_loss": avg_loss,
-        "mask_ratio": mask_ratio,
-        "masked_tokens_evaluated": total_masked_tokens,
-        "samples_evaluated": len(texts),
-        "note": "Masked reconstruction perplexity (appropriate for LIRA)",
-    }
+            # Random mask positions (like training)
+            mask_positions = torch.rand(1, seq_len, device=device) < mask_ratio
+            mask_positions[:, 0] = False
+            mask_positions[:, -1] = False
+
+            masked_input = input_ids.clone()
+            masked_input[mask_positions] = mask_token
+
+            output = model(masked_input)
+            logits = output["logits"]
+
+            masked_logits = logits[mask_positions]
+            masked_labels = input_ids[mask_positions]
+
+            if masked_logits.size(0) > 0:
+                loss = F.cross_entropy(masked_logits, masked_labels, reduction='sum')
+                total_loss += loss.item()
+                total_tokens += masked_logits.size(0)
+
+        avg_loss = total_loss / total_tokens if total_tokens > 0 else float('inf')
+        perplexity = np.exp(min(avg_loss, 100))
+
+        return {
+            "perplexity": perplexity,
+            "avg_loss": avg_loss,
+            "mask_ratio": mask_ratio,
+            "masked_tokens_evaluated": total_tokens,
+            "samples_evaluated": len(texts),
+            "note": "Masked reconstruction perplexity (LIRA)",
+        }
 
 
 @torch.no_grad()
@@ -587,6 +657,7 @@ def test_length_stress(
     prompt: str = "Once upon a time",
     lengths: list[int] = [50, 100, 200],
     device: str = "cuda",
+    model_type: str = "lira",
 ) -> dict:
     """
     Test generation quality at different lengths.
@@ -604,12 +675,21 @@ def test_length_stress(
         import time
         start = time.time()
 
-        output, history = model.generate_topk(
-            prompt_tensor,
-            gen_length=length,
-            num_steps=length * 2,
-            temperature=0.8,
-        )
+        if model_type == "gpt":
+            output = model.generate(
+                prompt_tensor,
+                max_new_tokens=length,
+                temperature=0.8,
+                top_k=50,
+            )
+            history = list(range(length))  # Placeholder for iterations
+        else:
+            output, history = model.generate_topk(
+                prompt_tensor,
+                gen_length=length,
+                num_steps=length * 2,
+                temperature=0.8,
+            )
 
         elapsed = time.time() - start
         tokens_per_sec = length / elapsed
@@ -708,15 +788,31 @@ def run_evaluation(args):
     checkpoint = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
 
     config = checkpoint["config"]
-    print(f"\nModel Config:")
+
+    # Detect model type from config or checkpoint
+    model_type = checkpoint.get("model_type", None)
+    if model_type is None:
+        # Infer from config type
+        if isinstance(config, GPTConfig):
+            model_type = "gpt"
+        else:
+            model_type = "lira"
+
+    print(f"\nModel Type: {model_type.upper()}")
+    print(f"Model Config:")
     print(f"  Hidden size: {config.hidden_size}")
     print(f"  Layers: {config.num_layers}")
     print(f"  Heads: {config.num_heads}")
     print(f"  Vocab size: {config.vocab_size}")
-    print(f"  Mask token ID: {config.mask_token_id}")
+    if model_type != "gpt":
+        print(f"  Mask token ID: {config.mask_token_id}")
 
-    # Load model
-    model = LatentCanvasModel(config)
+    # Load model based on type
+    if model_type == "gpt":
+        model = GPTModel(config)
+    else:
+        model = LatentCanvasModel(config)
+
     model.load_state_dict(checkpoint["model_state_dict"])
     model = model.to(args.device)
     model.eval()
@@ -734,6 +830,7 @@ def run_evaluation(args):
         "num_heads": config.num_heads,
         "vocab_size": config.vocab_size,
         "parameters": param_count,
+        "model_type": model_type,
     }}
 
     # ========================================================================
@@ -754,7 +851,8 @@ def run_evaluation(args):
                 max_tokens=args.max_tokens,
                 temperature=temp,
                 method="topk",
-                device=args.device
+                device=args.device,
+                model_type=model_type
             )
             generations.append(text)
             print(f"  [T={temp}] {text[:150]}...")
@@ -786,18 +884,23 @@ def run_evaluation(args):
 
     conf_analysis = analyze_confidence(
         model, tokenizer, tokenizer_type,
-        STORY_PROMPTS[:4], device=args.device
+        STORY_PROMPTS[:4], device=args.device,
+        model_type=model_type
     )
-    print(f"  Mean confidence (all): {conf_analysis['mean_all']:.4f}")
-    print(f"  Mean confidence (filled tokens): {conf_analysis['mean_filled']:.4f}")
-    print(f"  Mean confidence (masked tokens): {conf_analysis['mean_masked']:.4f}")
-    print(f"  Confidence gap (filled - masked): {conf_analysis['confidence_gap']:.4f}")
 
-    # Good model should have higher confidence on filled than masked
-    if conf_analysis['confidence_gap'] > 0.1:
-        print("  [GOOD] Model distinguishes filled from masked positions")
+    if model_type == "gpt":
+        print("  [N/A] GPT has no confidence head")
     else:
-        print("  [WARN] Low confidence differentiation")
+        print(f"  Mean confidence (all): {conf_analysis['mean_all']:.4f}")
+        print(f"  Mean confidence (filled tokens): {conf_analysis['mean_filled']:.4f}")
+        print(f"  Mean confidence (masked tokens): {conf_analysis['mean_masked']:.4f}")
+        print(f"  Confidence gap (filled - masked): {conf_analysis['confidence_gap']:.4f}")
+
+        # Good model should have higher confidence on filled than masked
+        if conf_analysis['confidence_gap'] > 0.1:
+            print("  [GOOD] Model distinguishes filled from masked positions")
+        else:
+            print("  [WARN] Low confidence differentiation")
 
     results["confidence"] = conf_analysis
 
@@ -810,7 +913,8 @@ def run_evaluation(args):
 
     coherence = test_coherence(
         model, tokenizer, tokenizer_type,
-        COHERENCE_PROMPTS, device=args.device
+        COHERENCE_PROMPTS, device=args.device,
+        model_type=model_type
     )
     print(f"  Combined Coherence: {coherence['coherence_rate']:.1%}")
     print(f"    - Keyword match:  {coherence['keyword_rate']:.1%}")
@@ -853,14 +957,18 @@ def run_evaluation(args):
 
         test_prompt = "Once upon a time, there was"
 
-        for method in ["topk", "remasking"]:
+        # GPT only has one generation method
+        methods = ["autoregressive"] if model_type == "gpt" else ["topk", "remasking"]
+
+        for method in methods:
             print(f"\nMethod: {method}")
             print("-" * 40)
             for _ in range(3):
                 text, meta = generate_sample(
                     model, tokenizer, tokenizer_type, test_prompt,
                     max_tokens=40, temperature=0.8,
-                    method=method, device=args.device
+                    method=method, device=args.device,
+                    model_type=model_type
                 )
                 print(f"  {text[:120]}...")
 
@@ -877,7 +985,8 @@ def run_evaluation(args):
             text, meta = generate_sample(
                 model, tokenizer, tokenizer_type, prompt,
                 max_tokens=30, temperature=0.8,
-                method="topk", device=args.device
+                method="topk", device=args.device,
+                model_type=model_type
             )
             print(f"Output: {text}")
             print()
@@ -893,7 +1002,8 @@ def run_evaluation(args):
 
         ppl_result = test_perplexity(
             model, tokenizer, tokenizer_type,
-            num_samples=100, device=args.device
+            num_samples=100, device=args.device,
+            model_type=model_type
         )
 
         if "error" in ppl_result:
@@ -901,8 +1011,11 @@ def run_evaluation(args):
         else:
             print(f"  Perplexity: {ppl_result['perplexity']:.2f}")
             print(f"  Avg Loss: {ppl_result['avg_loss']:.4f}")
-            print(f"  Masked tokens evaluated: {ppl_result['masked_tokens_evaluated']:,}")
-            print(f"  (Mask ratio: {ppl_result['mask_ratio']:.0%})")
+            if model_type == "gpt":
+                print(f"  Tokens evaluated: {ppl_result['tokens_evaluated']:,}")
+            else:
+                print(f"  Masked tokens evaluated: {ppl_result['masked_tokens_evaluated']:,}")
+                print(f"  (Mask ratio: {ppl_result['mask_ratio']:.0%})")
 
             if ppl_result['perplexity'] < 50:
                 print("  [GOOD] Low perplexity indicates good language modeling")
@@ -927,7 +1040,8 @@ def run_evaluation(args):
             STORY_PROMPTS[:3],  # Use first 3 prompts
             num_generations=5,
             max_tokens=40,
-            device=args.device
+            device=args.device,
+            model_type=model_type
         )
 
         print(f"  Word diversity:   {diversity_result['avg_word_diversity']:.1%}")
@@ -957,7 +1071,8 @@ def run_evaluation(args):
             model, tokenizer, tokenizer_type,
             prompt="Once upon a time",
             lengths=[50, 100, 200],
-            device=args.device
+            device=args.device,
+            model_type=model_type
         )
 
         for r in length_result['results']:
