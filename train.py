@@ -25,6 +25,7 @@ import torch
 import torch.nn.functional as F
 from torch.amp import GradScaler, autocast
 from pathlib import Path
+from dataclasses import dataclass
 
 
 def clear_memory():
@@ -38,6 +39,64 @@ from lira import LatentCanvasConfig, LatentCanvasModel, count_parameters
 from lira.dialectic import DialecticConfig, DialecticCanvas
 from lira.hybrid import HybridConfig, HybridShimmer, count_global_parameters
 from data import load_dataset_by_name, create_dataloader, get_default_prompt, list_datasets
+
+
+@dataclass
+class CurriculumStage:
+    """Configuration for a curriculum stage in progressive training."""
+    stage: int
+    num_refine_steps: int
+    min_mask_ratio: float
+    max_mask_ratio: float
+    use_confidence_loss: bool
+    data_start: float  # 0.0 - 1.0 (fraction of dataset)
+    data_end: float
+    description: str
+
+
+# Progressive curriculum: 4 stages with fresh data each
+CURRICULUM_STAGES = {
+    1: CurriculumStage(
+        stage=1,
+        num_refine_steps=1,
+        min_mask_ratio=0.3,
+        max_mask_ratio=0.3,
+        use_confidence_loss=False,
+        data_start=0.0,
+        data_end=0.25,
+        description="Single pass, fixed 30% masking (baseline)"
+    ),
+    2: CurriculumStage(
+        stage=2,
+        num_refine_steps=4,
+        min_mask_ratio=0.3,
+        max_mask_ratio=0.3,
+        use_confidence_loss=False,
+        data_start=0.25,
+        data_end=0.5,
+        description="Multiple passes (K=4), fixed 30% masking"
+    ),
+    3: CurriculumStage(
+        stage=3,
+        num_refine_steps=4,
+        min_mask_ratio=0.1,
+        max_mask_ratio=1.0,
+        use_confidence_loss=False,
+        data_start=0.5,
+        data_end=0.75,
+        description="Multiple passes (K=4), variable corruption (10-100%)"
+    ),
+    4: CurriculumStage(
+        stage=4,
+        num_refine_steps=4,
+        min_mask_ratio=0.1,
+        max_mask_ratio=1.0,
+        use_confidence_loss=True,
+        data_start=0.75,
+        data_end=1.0,
+        description="Full: iterative refinement with confidence supervision"
+    ),
+}
 
 
 def parse_args():
@@ -131,6 +190,14 @@ def parse_args():
     parser.add_argument("--checkpoint_name", type=str, default=None,
                         help="Custom checkpoint name prefix")
     parser.add_argument("--eval_every", type=int, default=180)
+
+    # Progressive curriculum (Option C: single run through all stages)
+    parser.add_argument("--progressive", action="store_true",
+                        help="Progressive curriculum: single run through all 4 stages with fresh data each")
+    parser.add_argument("--stage_epochs", type=int, default=3,
+                        help="Epochs per curriculum stage (total epochs = 4 × stage_epochs)")
+    parser.add_argument("--start_stage", type=int, default=1, choices=[1, 2, 3, 4],
+                        help="Start from this stage (useful for resuming progressive training)")
 
     return parser.parse_args()
 
@@ -491,6 +558,373 @@ def generate_samples(
         print(f"Sample {i+1} ({iterations} iters): {text[:120]}...")
 
     model.train()
+
+
+def train_progressive(args):
+    """
+    Progressive curriculum training - single run through all 4 stages.
+
+    Key features:
+    - Fresh data for each stage (no repetition across stages)
+    - Gradual complexity increase: K=1 → K=4, fixed → variable masking
+    - Confidence supervision only in final stage
+    - Single checkpoint lineage
+    """
+    torch.manual_seed(args.seed)
+
+    # Create checkpoint directory
+    Path(args.checkpoint_dir).mkdir(exist_ok=True)
+
+    total_epochs = args.stage_epochs * 4
+    print(f"\n{'='*60}")
+    print(f"PROGRESSIVE CURRICULUM TRAINING")
+    print(f"{'='*60}")
+    print(f"  Model: {args.model.upper()}")
+    print(f"  Dataset: {args.dataset}")
+    print(f"  Total samples: {args.num_samples}")
+    print(f"  Samples per stage: ~{args.num_samples // 4}")
+    print(f"  Epochs per stage: {args.stage_epochs}")
+    print(f"  Total epochs: {total_epochs}")
+    print(f"  Start stage: {args.start_stage}")
+    print(f"{'='*60}\n")
+
+    # Load ALL data upfront
+    print(f"Loading data from '{args.dataset}'...")
+    all_train_tokens, vocab_size, tokenizer = load_dataset_by_name(
+        args.dataset, args.num_samples, "train", args.seed,
+        vocab_size=args.vocab_size, return_tokenizer=True
+    )
+    val_tokens, _, _ = load_dataset_by_name(
+        args.dataset, min(1000, args.num_samples // 5), "validation",
+        args.seed + 1, vocab_size=args.vocab_size, return_tokenizer=True
+    )
+
+    # Split data into 4 parts (one per stage) - no overlap = no repetition
+    n = len(all_train_tokens)
+    stage_data = {
+        1: all_train_tokens[0:n//4],
+        2: all_train_tokens[n//4:n//2],
+        3: all_train_tokens[n//2:3*n//4],
+        4: all_train_tokens[3*n//4:n],
+    }
+
+    print(f"\nData split across stages:")
+    for stage_num, data in stage_data.items():
+        print(f"  Stage {stage_num}: {len(data)} samples")
+
+    # Get mask_token_id from tokenizer
+    from lira.tokenizer import ShimmerTokenizer
+    if isinstance(tokenizer, ShimmerTokenizer):
+        mask_token_id = tokenizer.mask_token_id
+    else:
+        mask_token_id = vocab_size
+
+    # Create model
+    model, config = create_model(args, vocab_size, mask_token_id)
+    print(f"\n{args.model.upper()} model parameters: {count_parameters(model):,}")
+
+    if args.model == "hybrid":
+        param_info = count_global_parameters(model)
+        print(f"  Core (LIRA): {param_info['core']:,}")
+        print(f"  Global layers: {param_info['global']:,} ({param_info['global_ratio']:.1%})")
+        print(f"  Coherence head: {param_info['coherence']:,}")
+
+    # Load checkpoint if specified
+    if args.load_checkpoint:
+        print(f"\nLoading checkpoint: {args.load_checkpoint}")
+        checkpoint = torch.load(args.load_checkpoint, map_location="cpu", weights_only=False)
+        state_dict = checkpoint["model_state_dict"]
+
+        if any(k.startswith("_orig_mod.") for k in state_dict.keys()):
+            state_dict = {k.replace("_orig_mod.", ""): v for k, v in state_dict.items()}
+            print("  Stripped _orig_mod. prefix from compiled checkpoint")
+
+        try:
+            model.load_state_dict(state_dict, strict=False)
+            print("  Loaded model weights (strict=False)")
+        except Exception as e:
+            print(f"  Warning: Could not load checkpoint: {e}")
+
+    # Setup device
+    if args.gpu == -1 or not torch.cuda.is_available():
+        device = torch.device("cpu")
+        print(f"\nUsing CPU")
+    else:
+        device = torch.device(f"cuda:{args.gpu}")
+        torch.cuda.set_device(args.gpu)
+        gpu_name = torch.cuda.get_device_name(args.gpu)
+        gpu_mem = torch.cuda.get_device_properties(args.gpu).total_memory / 1024**3
+        print(f"\nUsing GPU {args.gpu}: {gpu_name} ({gpu_mem:.1f}GB)")
+
+    model = model.to(device)
+
+    # Optional: compile model
+    if args.compile and hasattr(torch, 'compile'):
+        print(f"\nCompiling model with torch.compile(mode='{args.compile_mode}')...")
+        try:
+            model = torch.compile(model, mode=args.compile_mode)
+            print("  ✓ Model compiled successfully")
+        except Exception as e:
+            print(f"  ⚠ Compilation failed: {e}")
+
+    # Optimizer (single optimizer for entire training)
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=args.lr,
+        weight_decay=args.weight_decay,
+    )
+
+    # Scheduler spans all epochs
+    total_steps_estimate = sum(
+        (len(stage_data[s]) // args.batch_size) * args.stage_epochs
+        for s in range(1, 5)
+    ) // args.gradient_accumulation_steps
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, max(1, total_steps_estimate))
+
+    # Mixed precision
+    scaler = GradScaler('cuda') if args.fp16 else None
+
+    # Checkpoint naming
+    ckpt_prefix = args.checkpoint_name or f"{args.model}_{args.dataset}_progressive"
+
+    # Training state
+    best_val_loss = float("inf")
+    global_step = 0
+    start_time = datetime.datetime.now()
+
+    # Gradient accumulation
+    accum_steps = args.gradient_accumulation_steps
+    effective_batch_size = args.batch_size * accum_steps
+
+    print(f"\nGradient accumulation: {accum_steps} steps → effective batch size: {effective_batch_size}")
+
+    # ========== PROGRESSIVE TRAINING LOOP ==========
+    current_stage = 0
+    train_loader = None
+
+    for epoch in range(total_epochs):
+        # Determine current stage (1-indexed)
+        new_stage = (epoch // args.stage_epochs) + 1
+
+        # Skip stages before start_stage
+        if new_stage < args.start_stage:
+            print(f"\nSkipping epoch {epoch+1} (stage {new_stage} < start_stage {args.start_stage})")
+            continue
+
+        # Stage transition?
+        if new_stage != current_stage:
+            current_stage = new_stage
+            stage_config = CURRICULUM_STAGES[current_stage]
+
+            print(f"\n{'='*60}")
+            print(f"STAGE {current_stage}/4: {stage_config.description}")
+            print(f"{'='*60}")
+            print(f"  Refinement steps (K): {stage_config.num_refine_steps}")
+            print(f"  Mask ratio: {stage_config.min_mask_ratio:.0%} - {stage_config.max_mask_ratio:.0%}")
+            print(f"  Confidence loss: {'ON' if stage_config.use_confidence_loss else 'OFF'}")
+            print(f"  Data samples: {len(stage_data[current_stage])}")
+            print(f"  Epochs in this stage: {args.stage_epochs}")
+            print(f"{'='*60}\n")
+
+            # Create new dataloader for this stage's data
+            train_loader = create_dataloader(
+                stage_data[current_stage],
+                mask_token_id=config.mask_token_id,
+                batch_size=args.batch_size,
+                max_seq_len=args.max_seq_len,
+                min_mask_ratio=stage_config.min_mask_ratio,
+                max_mask_ratio=stage_config.max_mask_ratio,
+                shuffle=True,
+            )
+
+            # Validation loader (same throughout, uses stage 4 settings for consistency)
+            val_loader = create_dataloader(
+                val_tokens,
+                mask_token_id=config.mask_token_id,
+                batch_size=args.batch_size,
+                max_seq_len=args.max_seq_len,
+                min_mask_ratio=0.1,
+                max_mask_ratio=1.0,
+                shuffle=False,
+            )
+
+        # Current stage config
+        stage_config = CURRICULUM_STAGES[current_stage]
+        phase_for_loss = 4 if stage_config.use_confidence_loss else 1
+
+        epoch_start = time.time()
+        epoch_loss = 0
+        epoch_batches = 0
+        last_log = datetime.datetime.now()
+        last_val = datetime.datetime.now()
+
+        optimizer.zero_grad()
+
+        for batch_idx, batch in enumerate(train_loader):
+            is_accumulating = ((batch_idx + 1) % accum_steps != 0) and (batch_idx + 1 < len(train_loader))
+
+            if args.compile and hasattr(torch.compiler, 'cudagraph_mark_step_begin'):
+                torch.compiler.cudagraph_mark_step_begin()
+
+            if args.fp16:
+                with autocast('cuda'):
+                    result = compute_loss(
+                        model, batch, phase_for_loss, device,
+                        args.model, stage_config.num_refine_steps
+                    )
+                    scaled_loss = result["loss"] / accum_steps
+                scaler.scale(scaled_loss).backward()
+
+                if not is_accumulating:
+                    scaler.unscale_(optimizer)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
+                    scaler.step(optimizer)
+                    scaler.update()
+                    optimizer.zero_grad()
+            else:
+                result = compute_loss(
+                    model, batch, phase_for_loss, device,
+                    args.model, stage_config.num_refine_steps
+                )
+                scaled_loss = result["loss"] / accum_steps
+                scaled_loss.backward()
+
+                if not is_accumulating:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
+                    optimizer.step()
+                    optimizer.zero_grad()
+
+            if not is_accumulating:
+                scheduler.step()
+
+            epoch_loss += result["loss"].item()
+            epoch_batches += 1
+            global_step += args.batch_size
+
+            now = datetime.datetime.now()
+
+            # Periodic logging
+            if (now - last_log).total_seconds() > 10:
+                last_log = now
+                avg_loss = epoch_loss / epoch_batches if epoch_batches > 0 else 0
+                elapsed = (now - start_time).total_seconds()
+
+                log_parts = [
+                    f"Stage {current_stage}",
+                    f"Epoch {epoch+1}/{total_epochs}",
+                    f"Step {global_step}",
+                    f"Loss {avg_loss:.4f}",
+                    f"LR {scheduler.get_last_lr()[0]:.2e}",
+                    f"Elapsed {elapsed:.0f}s",
+                ]
+
+                if stage_config.use_confidence_loss and "conf_loss" in result:
+                    log_parts.append(f"ConfLoss {result['conf_loss'].item():.4f}")
+
+                print(" | ".join(log_parts))
+
+            # Periodic validation
+            if (now - last_val).total_seconds() > args.eval_every:
+                val_metrics = evaluate(
+                    model, val_loader, phase_for_loss, device,
+                    args.model, stage_config.num_refine_steps
+                )
+                last_val = datetime.datetime.now()
+
+                val_loss = val_metrics['val_loss'] / args.batch_size
+                train_loss = epoch_loss / epoch_batches if epoch_batches > 0 else 0
+
+                print(f"\n  Validation: TrainLoss {train_loss:.4f} | ValLoss {val_loss:.4f} | ValAcc {val_metrics['val_acc']:.2f}%\n")
+
+                if val_metrics["val_loss"] < best_val_loss:
+                    best_val_loss = val_metrics["val_loss"]
+                    torch.save({
+                        "model_state_dict": model.state_dict(),
+                        "optimizer_state_dict": optimizer.state_dict(),
+                        "scheduler_state_dict": scheduler.state_dict(),
+                        "scaler_state_dict": scaler.state_dict() if scaler else None,
+                        "epoch": epoch,
+                        "stage": current_stage,
+                        "config": config,
+                        "args": args,
+                        "global_step": global_step,
+                        "best_val_loss": best_val_loss,
+                        "progressive": True,
+                    }, f"{args.checkpoint_dir}/{ckpt_prefix}_best.pt")
+                    print(f"  ✓ Saved best checkpoint (val_loss={val_loss:.4f})")
+
+                clear_memory()
+
+        # End of epoch summary
+        epoch_time = time.time() - epoch_start
+        val_metrics = evaluate(
+            model, val_loader, phase_for_loss, device,
+            args.model, stage_config.num_refine_steps
+        )
+
+        avg_epoch_loss = epoch_loss / epoch_batches if epoch_batches > 0 else 0
+        val_loss = val_metrics['val_loss'] / args.batch_size
+
+        print(f"\n[Stage {current_stage}] Epoch {epoch+1}/{total_epochs} completed in {epoch_time:.1f}s")
+        print(f"  TrainLoss: {avg_epoch_loss:.4f} | ValLoss: {val_loss:.4f} | ValAcc: {val_metrics['val_acc']:.2f}%")
+
+        # Save stage checkpoint at end of each stage
+        stage_epoch = (epoch % args.stage_epochs) + 1
+        if stage_epoch == args.stage_epochs:
+            torch.save({
+                "model_state_dict": model.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "scheduler_state_dict": scheduler.state_dict(),
+                "scaler_state_dict": scaler.state_dict() if scaler else None,
+                "epoch": epoch,
+                "stage": current_stage,
+                "config": config,
+                "args": args,
+                "global_step": global_step,
+                "best_val_loss": best_val_loss,
+                "progressive": True,
+            }, f"{args.checkpoint_dir}/{ckpt_prefix}_stage{current_stage}.pt")
+            print(f"  ✓ Saved stage {current_stage} checkpoint")
+
+        # Update best if needed
+        if val_metrics["val_loss"] < best_val_loss:
+            best_val_loss = val_metrics["val_loss"]
+
+        clear_memory()
+
+    # Final checkpoint
+    torch.save({
+        "model_state_dict": model.state_dict(),
+        "optimizer_state_dict": optimizer.state_dict(),
+        "scheduler_state_dict": scheduler.state_dict(),
+        "scaler_state_dict": scaler.state_dict() if scaler else None,
+        "epoch": total_epochs - 1,
+        "stage": 4,
+        "config": config,
+        "args": args,
+        "global_step": global_step,
+        "best_val_loss": best_val_loss,
+        "progressive": True,
+    }, f"{args.checkpoint_dir}/{ckpt_prefix}_final.pt")
+
+    # Generate samples
+    print("\n=== Sample Generations ===")
+    default_prompt = get_default_prompt(args.dataset)
+    generate_samples(
+        model, tokenizer, num_samples=3, prompt=default_prompt, device=device,
+        model_type=args.model, num_refine_steps=4  # Use full refinement for generation
+    )
+
+    print(f"\n{'='*60}")
+    print(f"PROGRESSIVE TRAINING COMPLETE!")
+    print(f"{'='*60}")
+    print(f"  Total epochs: {total_epochs}")
+    print(f"  Best val loss: {best_val_loss:.4f}")
+    print(f"  Checkpoints saved:")
+    print(f"    - {ckpt_prefix}_best.pt")
+    print(f"    - {ckpt_prefix}_stage1.pt ... {ckpt_prefix}_stage4.pt")
+    print(f"    - {ckpt_prefix}_final.pt")
+    print(f"{'='*60}\n")
 
 
 def train(args):
@@ -892,4 +1326,7 @@ def train(args):
 
 if __name__ == "__main__":
     args = parse_args()
-    train(args)
+    if args.progressive:
+        train_progressive(args)
+    else:
+        train(args)

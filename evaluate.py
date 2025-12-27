@@ -186,7 +186,7 @@ def load_tokenizer(vocab_size: int, tokenizer_dir: str = "tokenizers"):
         return tokenizer, "gpt2"
     else:
         from lira.tokenizer import ShimmerTokenizer
-        tokenizer_path = Path(tokenizer_dir) / f"shimmer_blend_{vocab_size}.model"
+        tokenizer_path = Path(tokenizer_dir) / f"shimmer_tinystories_{vocab_size}.model"
         if not tokenizer_path.exists():
             raise FileNotFoundError(f"Tokenizer not found at {tokenizer_path}")
         tokenizer = ShimmerTokenizer(str(tokenizer_path))
