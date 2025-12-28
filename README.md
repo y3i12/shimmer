@@ -7,7 +7,34 @@ Shimmer is an experimental language model that generates text through iterative 
 
 For the moment being, Shimmer has the "Toy LLM" aura and doesn't do much. At the moment, the pre-trained models only synthesize stories based on TinyStories.
 
-The validation for the model working was to train 2 equivalent models, one using LIRA and another using GPT, both with ~12M params. The results were bamboozling as GPT was unable to produce coherent stories. See [LIRA 12M evaluation](shimmer\eval_results\eval_results_lira_12M.txt) and [GPT 12M evaluation](shimmer\eval_results\eval_results_gpt_12M.txt). _**It might be the case that the GPT evaluation is WRONG**_.
+The validation for the model working was to train 2 equivalent models, one using LIRA and another using GPT, both with ~12M params. The results were striking - GPT collapsed into severe repetition while LIRA produced coherent stories. See [LIRA 12M evaluation](eval_results/eval_results_lira_12M.txt) and [GPT 12M evaluation](eval_results/eval_results_gpt_12M.txt).
+
+---
+
+## Quick Start
+
+```bash
+# Clone and install
+git clone https://github.com/y3i12/shimmer.git
+cd shimmer
+pip install -r requirements.txt
+
+# Train a small model locally
+python train.py --progressive \
+    --model lira --dataset tinystories \
+    --num_samples 100000 --vocab_size 10000 \
+    --hidden_size 288 --num_layers 6 --num_heads 6 \
+    --batch_size 64 --stage_epochs 3 \
+    --device cuda --fp16
+
+# Evaluate
+python evaluate.py --checkpoint checkpoints/lira_*_final.pt --full
+
+# Generate text
+python generate.py --checkpoint checkpoints/lira_*_final.pt \
+    --tokenizer tokenizers/shimmer_*.model \
+    --prompt "Once upon a time"
+```
 
 ---
 
@@ -97,7 +124,7 @@ python train.py --progressive \
 **Perplexity:** 1.64
 **Diversity:** 65.9%
 
-_Evaluation made by a simple script, still to be worked on - see full results for [LIRA 50M](shimmer\eval_results\eval_results_lira_50M.txt), [LIRA 12M](shimmer\eval_results\eval_results_lira_12M.txt) and [GPT 12M](shimmer\eval_results\eval_results_gpt_12M.txt)._
+_See full results: [LIRA 50M](eval_results/eval_results_lira_50M.txt), [LIRA 12M](eval_results/eval_results_lira_12M.txt), [GPT 12M](eval_results/eval_results_gpt_12M.txt)._
 
 ---
 
@@ -142,8 +169,8 @@ Fixed masking ratio (e.g., 15% in BERT) trains the model for one specific task. 
 
 ### Current Limitations
 
-1. **Scale**: 13-27M params is tiny; benefits may amplify at scale
-2. **Re-masking instability**: Confidence head needs better calibration
+1. **Scale**: Validated up to 50M params; benefits seem to amplify at scale
+2. **Re-masking instability**: Confidence head needs better calibration at small scale
 3. **Speed**: K forward passes per generation step (vs 1 for autoregressive)
 4. **Training data**: Only tested on TinyStories
 

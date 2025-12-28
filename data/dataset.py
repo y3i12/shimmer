@@ -529,6 +529,224 @@ def load_shimmer_blend(
     return token_ids, final_vocab_size
 
 
+def load_agentic_blend(
+    num_samples: int,
+    split: str = "train",
+    seed: int = 42,
+    vocab_size: int = 0,
+    tokenizer_cache_dir: str = "tokenizers",
+    return_tokenizer: bool = False,
+) -> tuple[list[list[int]], int] | tuple[list[list[int]], int, any]:
+    """
+    Load Agentic Blend - high-quality datasets for 512M+ models.
+
+    Blend composition (proportions of num_samples):
+    - Nemotron-v2 (30%): General + reasoning + math + code
+    - OpenMathInstruct-2 (22%): Math reasoning (Llama-405B generated)
+    - OpenHermes-2.5 (15%): Proven instruction following
+    - Ling-Coder-SFT (15%): Code in 20 languages
+    - smoltalk (12%): Diverse conversations
+    - xlam-function-calling (6%): Agentic/tool use
+
+    Designed for 512M+ parameter models with ~6M samples available.
+    """
+    from datasets import load_dataset
+
+    random.seed(seed)
+
+    # Calculate samples per source
+    n_nemotron = int(num_samples * 0.30)
+    n_math = int(num_samples * 0.22)
+    n_hermes = int(num_samples * 0.15)
+    n_code = int(num_samples * 0.15)
+    n_smol = int(num_samples * 0.12)
+    n_function = num_samples - n_nemotron - n_math - n_hermes - n_code - n_smol  # ~6%
+
+    all_texts = []
+
+    # --- 1. Nemotron-Post-Training-v2 (30%) - Multi-domain ---
+    print(f"Loading Nemotron-v2 ({n_nemotron} samples)...")
+    try:
+        nemotron = load_dataset("nvidia/Nemotron-Post-Training-Dataset-v2", split="train", streaming=True)
+        count = 0
+        for example in nemotron:
+            if count >= n_nemotron:
+                break
+            # Handle different conversation formats
+            if "conversations" in example:
+                convs = example["conversations"]
+                text_parts = []
+                for turn in convs:
+                    role = turn.get("role", turn.get("from", "user"))
+                    content = turn.get("content", turn.get("value", ""))
+                    if role in ["system"]:
+                        text_parts.append(f"System: {content}")
+                    elif role in ["user", "human"]:
+                        text_parts.append(f"User: {content}")
+                    elif role in ["assistant", "gpt"]:
+                        text_parts.append(f"Assistant: {content}")
+                if text_parts:
+                    all_texts.append("\n".join(text_parts))
+                    count += 1
+            elif "input" in example and "output" in example:
+                text = f"User: {example['input']}\nAssistant: {example['output']}"
+                all_texts.append(text)
+                count += 1
+        print(f"  Loaded {count} Nemotron samples")
+    except Exception as e:
+        print(f"  Warning: Could not load Nemotron-v2: {e}")
+
+    # --- 2. OpenMathInstruct-2 (22%) - Math reasoning ---
+    print(f"Loading OpenMathInstruct-2 ({n_math} samples)...")
+    try:
+        mathinstruct = load_dataset("nvidia/OpenMathInstruct-2", split="train", streaming=True)
+        count = 0
+        for example in mathinstruct:
+            if count >= n_math:
+                break
+            problem = example.get("problem", example.get("question", ""))
+            solution = example.get("generated_solution", example.get("solution", example.get("answer", "")))
+            if problem and solution:
+                text = f"User: {problem}\nAssistant: {solution}"
+                all_texts.append(text)
+                count += 1
+        print(f"  Loaded {count} OpenMathInstruct samples")
+    except Exception as e:
+        print(f"  Warning: Could not load OpenMathInstruct-2: {e}")
+
+    # --- 3. OpenHermes-2.5 (15%) - Instruction following ---
+    print(f"Loading OpenHermes-2.5 ({n_hermes} samples)...")
+    try:
+        hermes = load_dataset("teknium/OpenHermes-2.5", split="train", streaming=True)
+        count = 0
+        for example in hermes:
+            if count >= n_hermes:
+                break
+            conversations = example.get("conversations", [])
+            text_parts = []
+            for turn in conversations:
+                role = turn.get("from", "user")
+                content = turn.get("value", "")
+                if role == "system":
+                    text_parts.append(f"System: {content}")
+                elif role == "human":
+                    text_parts.append(f"User: {content}")
+                elif role == "gpt":
+                    text_parts.append(f"Assistant: {content}")
+            if text_parts:
+                all_texts.append("\n".join(text_parts))
+                count += 1
+        print(f"  Loaded {count} OpenHermes samples")
+    except Exception as e:
+        print(f"  Warning: Could not load OpenHermes-2.5: {e}")
+
+    # --- 4. Ling-Coder-SFT (15%) - Code ---
+    print(f"Loading Ling-Coder-SFT ({n_code} samples)...")
+    try:
+        lingcoder = load_dataset("inclusiveai/Ling-Coder-SFT", split="train", streaming=True)
+        count = 0
+        for example in lingcoder:
+            if count >= n_code:
+                break
+            # Try different field names
+            if "conversations" in example:
+                convs = example["conversations"]
+                text_parts = []
+                for turn in convs:
+                    role = turn.get("role", turn.get("from", "user"))
+                    content = turn.get("content", turn.get("value", ""))
+                    if role in ["user", "human"]:
+                        text_parts.append(f"User: {content}")
+                    elif role in ["assistant", "gpt"]:
+                        text_parts.append(f"Assistant: {content}")
+                if text_parts:
+                    all_texts.append("\n".join(text_parts))
+                    count += 1
+            elif "instruction" in example:
+                instr = example.get("instruction", "")
+                inp = example.get("input", "")
+                out = example.get("output", "")
+                if instr and out:
+                    query = f"{instr}\n{inp}" if inp else instr
+                    text = f"User: {query}\nAssistant: {out}"
+                    all_texts.append(text)
+                    count += 1
+        print(f"  Loaded {count} Ling-Coder samples")
+    except Exception as e:
+        print(f"  Warning: Could not load Ling-Coder-SFT: {e}")
+
+    # --- 5. smoltalk (12%) - Diverse conversations ---
+    print(f"Loading smoltalk ({n_smol} samples)...")
+    try:
+        smoltalk = load_dataset("HuggingFaceTB/smoltalk", "all", split="train", streaming=True)
+        count = 0
+        for example in smoltalk:
+            if count >= n_smol:
+                break
+            messages = example.get("messages", [])
+            text_parts = []
+            for msg in messages:
+                role = msg.get("role", "user")
+                content = msg.get("content", "")
+                if role == "system":
+                    text_parts.append(f"System: {content}")
+                elif role == "user":
+                    text_parts.append(f"User: {content}")
+                elif role == "assistant":
+                    text_parts.append(f"Assistant: {content}")
+            if text_parts:
+                all_texts.append("\n".join(text_parts))
+                count += 1
+        print(f"  Loaded {count} smoltalk samples")
+    except Exception as e:
+        print(f"  Warning: Could not load smoltalk: {e}")
+
+    # --- 6. xlam-function-calling (6%) - Agentic/tool use ---
+    print(f"Loading xlam-function-calling ({n_function} samples)...")
+    try:
+        xlam = load_dataset("Salesforce/xlam-function-calling-60k", split="train", streaming=True)
+        count = 0
+        for example in xlam:
+            if count >= n_function:
+                break
+            query = example.get("query", example.get("instruction", ""))
+            tools = example.get("tools", "")
+            answers = example.get("answers", example.get("output", ""))
+            if query and answers:
+                # Format with tools context if available
+                if tools:
+                    text = f"System: Available tools: {tools}\nUser: {query}\nAssistant: {answers}"
+                else:
+                    text = f"User: {query}\nAssistant: {answers}"
+                all_texts.append(text)
+                count += 1
+        print(f"  Loaded {count} xlam function-calling samples")
+    except Exception as e:
+        print(f"  Warning: Could not load xlam-function-calling: {e}")
+
+    # Shuffle the blend
+    random.shuffle(all_texts)
+
+    # Split for validation if needed
+    if split == "validation":
+        split_idx = int(len(all_texts) * 0.9)
+        all_texts = all_texts[split_idx:]
+    else:
+        split_idx = int(len(all_texts) * 0.9)
+        all_texts = all_texts[:split_idx]
+
+    print(f"Total agentic blend size: {len(all_texts)} samples")
+
+    # Tokenize
+    tokenizer, final_vocab_size = _get_tokenizer(vocab_size, all_texts, tokenizer_cache_dir, dataset_name="agentic")
+    token_ids = _tokenize_texts(all_texts, tokenizer, vocab_size, min_length=5)
+
+    print(f"Loaded {len(token_ids)} agentic samples, vocab_size={final_vocab_size}")
+    if return_tokenizer:
+        return token_ids, final_vocab_size, tokenizer
+    return token_ids, final_vocab_size
+
+
 # Dataset registry
 DATASETS = {
     "tinystories": {
@@ -555,6 +773,11 @@ DATASETS = {
         "loader": load_shimmer_blend,
         "description": "Shimmer Blend - SlimOrca(40%) + OrcaMath(20%) + UltraChat(25%) + Code(15%)",
         "default_prompt": "User: Explain how neural networks learn.\nAssistant:",
+    },
+    "agentic": {
+        "loader": load_agentic_blend,
+        "description": "Agentic Blend - Nemotron(30%) + MathInstruct(22%) + Hermes(15%) + Code(15%) + Smol(12%) + Tools(6%)",
+        "default_prompt": "User: Write a Python function to calculate fibonacci numbers.\nAssistant:",
     },
 }
 

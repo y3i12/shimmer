@@ -113,7 +113,7 @@ def parse_args():
 
     # Data
     parser.add_argument("--dataset", type=str, default="tinystories",
-                        choices=["tinystories", "everyday", "bitext", "arena", "blend"],
+                        choices=["tinystories", "everyday", "bitext", "arena", "blend", "agentic"],
                         help="Dataset: tinystories, everyday (2K), bitext (27K), arena (33K), blend (450K instruction mix)")
     parser.add_argument("--num_samples", type=int, default=10000)
     parser.add_argument("--max_seq_len", type=int, default=128)
