@@ -571,7 +571,7 @@ def load_agentic_blend(
     # --- 1. Nemotron-Post-Training-v2 (30%) - Multi-domain ---
     print(f"Loading Nemotron-v2 ({n_nemotron} samples)...")
     try:
-        nemotron = load_dataset("nvidia/Nemotron-Post-Training-Dataset-v2", split="train", streaming=True, token=HF_TOKEN)
+        nemotron = load_dataset("nvidia/Nemotron-Post-Training-Dataset-v2", split="stem", streaming=True, token=HF_TOKEN)
         count = 0
         for example in nemotron:
             if count >= n_nemotron:
@@ -647,7 +647,7 @@ def load_agentic_blend(
     # --- 4. Ling-Coder-SFT (15%) - Code ---
     print(f"Loading Ling-Coder-SFT ({n_code} samples)...")
     try:
-        lingcoder = load_dataset("inclusiveai/Ling-Coder-SFT", split="train", streaming=True, token=HF_TOKEN)
+        lingcoder = load_dataset("inclusionAI/Ling-Coder-SFT", split="train", streaming=True, token=HF_TOKEN)
         count = 0
         for example in lingcoder:
             if count >= n_code:
