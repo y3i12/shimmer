@@ -5,7 +5,9 @@
 
 Shimmer is an experimental language model that generates text through iterative refinement of a latent canvas, inspired by diffusion models and recursive reasoning architectures.
 
-For the moment being, Shimmer has the "Toy LLM" aura and doesn't do much.
+For the moment being, Shimmer has the "Toy LLM" aura and doesn't do much. At the moment, the pre-trained models only synthesize stories based on TinyStories.
+
+The validation for the model working was to train 2 equivalent models, one using LIRA and another using GPT, both with ~12M params. The results were bamboozling as GPT was unable to produce coherent stories. See [LIRA 12M evaluation](shimmer\eval_results\eval_results_lira_12M.txt) and [GPT 12M evaluation](shimmer\eval_results\eval_results_gpt_12M.txt). _**It might be the case that the GPT evaluation is WRONG**_.
 
 ---
 
@@ -35,16 +37,16 @@ The cat was peacefully sleeping
 ## Architecture (LIRA)
 
 ```
-┌─────────────────────────────────────────┐
-│         LATENT CANVAS                   │
-│  [z₀] [z₁] [z₂] ... [zₙ]               │
-│         ↓                               │
-│    REFINE BLOCK (applied K times)       │
-│    - Bidirectional attention            │
-│    - Same weights each iteration        │
-│         ↓                               │
-│    DECODE → tokens + confidence         │
-└─────────────────────────────────────────┘
+┌──────────────────────────────────────┐
+│         LATENT CANVAS                │
+│  [z₀] [z₁] [z₂] ... [zₙ]             │
+│         ↓                            │
+│    REFINE BLOCK (applied K times)    │
+│    - Bidirectional attention         │
+│    - Same weights each iteration     │
+│         ↓                            │
+│    DECODE → tokens + confidence      │
+└──────────────────────────────────────┘
 ```
 
 **Key components:**
@@ -54,118 +56,113 @@ The cat was peacefully sleeping
 
 ---
 
-## Training Phases
+## Training Stages
 
-| Phase | What it tests | Key setting |
+| Stages | What it tests | Key setting |
 |-------|---------------|-------------|
 | **1** | Baseline single-pass | K=1, 30% masking |
 | **2** | Multiple iterations help? | K=4, 30% masking |
 | **3** | Variable corruption | K=4, 10-100% masking |
 | **4** | Confidence supervision | + confidence loss |
 
+The training process creates splits of samples for each stage and trains epochs with the splits.
+
 ```bash
-# Phase 1: Baseline
-python train.py --phase 1 --num_samples 50000 --epochs 10 \
-    --hidden_size 256 --num_heads 8 --device cuda --fp16
-
-# Phase 2: Test iterative refinement
-python train.py --phase 2 --load_checkpoint checkpoints/phase1_best.pt ...
-
-# Phase 3: Variable corruption (LLaDA-style)
-python train.py --phase 3 --load_checkpoint checkpoints/phase2_best.pt ...
-
-# Phase 4: Confidence supervision
-python train.py --phase 4 --load_checkpoint checkpoints/phase3_best.pt ...
+# 50M tinystories training
+python train.py --progressive \
+    --model lira \
+    --dataset tinystories \
+    --num_samples 2000000 \
+    --vocab_size 10000 \
+    --hidden_size 512 \
+    --num_layers 10 \
+    --num_heads 8 \
+    --max_seq_len 256 \
+    --batch_size 64 \
+    --stage_epochs 3 \
+    --lr 2e-4 \
+    --device cuda --fp16 \
+    --gpu 1 \
+    --checkpoint_name lira_50m_progressive
 ```
 
 ---
 
-## Results (13M parameter toy model)
+## Evaluation Summary (50M parameter toy model)
 
-| Phase | Val Loss | Val Acc | Notes |
-|-------|----------|---------|-------|
-| 1 | 6.38 | 61.6% | Baseline works |
-| 2 | 5.50 | 65.5% | +4% from iterations |
-| 3 | 4.72 | 40.7%* | Handles variable corruption |
-| 4 | 4.63 | 41.5% | Confidence head learns |
+**Model:** 42,359,808 parameters
+**Coherence Rate:** 100.0%
+**Confidence Gap:** 0.7126
+**Bigram Repetition:** 7.7%
+**Perplexity:** 1.64
+**Diversity:** 65.9%
 
-*Accuracy drops because task is harder (10-100% masking vs fixed 30%)
-
----
-
-## Generation
-
-```python
-from lira import LatentCanvasModel, LatentCanvasConfig
-import torch
-
-# Load model
-checkpoint = torch.load('checkpoints/phase4_best.pt', weights_only=False)
-model = LatentCanvasModel(checkpoint['config']).cuda()
-model.load_state_dict(checkpoint['model_state_dict'])
-
-# Generate
-from transformers import AutoTokenizer
-tokenizer = AutoTokenizer.from_pretrained('gpt2')
-
-prompt = "Once upon a time"
-prompt_ids = torch.tensor([tokenizer.encode(prompt)], device='cuda')
-
-canvas, history = model.generate_topk(
-    prompt_ids,
-    gen_length=50,
-    num_steps=15,
-    temperature=0.8
-)
-
-print(tokenizer.decode(canvas[0].tolist()))
-```
+_Evaluation made by a simple script, still to be worked on - see full results for [LIRA 50M](shimmer\eval_results\eval_results_lira_50M.txt), [LIRA 12M](shimmer\eval_results\eval_results_lira_12M.txt) and [GPT 12M](shimmer\eval_results\eval_results_gpt_12M.txt)._
 
 ---
 
-## Project Structure
 
-```
-shimmer/
-├── lira/                    # LIRA architecture
-│   ├── __init__.py
-│   ├── layers.py           # Transformer building blocks
-│   └── canvas.py           # LatentCanvasModel
-├── data/
-│   ├── __init__.py
-│   └── dataset.py          # TinyStories + variable corruption
-├── train.py                # Training script (4 phases)
-├── checkpoints/            # Saved models
-└── README.md
-```
+
+## Comparison to Other Architectures
+
+| Aspect | GPT (Autoregressive) | BERT (Masked LM) | LLaDA (Diffusion) | LIRA (This) |
+|--------|---------------------|------------------|-------------------|-------------|
+| Attention | Causal | Bidirectional | Bidirectional | Bidirectional |
+| Generation | Sequential | N/A | Parallel iterative | Parallel iterative |
+| Refinement | None | None | Confidence-based | Confidence + re-mask |
+| Network reuse | No | No | No | Yes (K iterations) |
+| Training | Next token | Masked tokens | Variable masking | Variable masking |
 
 ---
 
-## Inspirations
+## Theoretical Foundations
 
-- **LLaDA**: Masked diffusion for language, iterative unmasking
-- **TinyRecursiveModels (TRM)**: Same network applied recursively
-- **BERT**: Masked language modeling foundation
-- **Diffusion models**: Iterative refinement from noise
+### Why Iterative Refinement?
+
+1. **Global coherence**: Each pass sees the full context, enabling long-range dependencies
+2. **Uncertainty resolution**: Early passes establish structure, later passes refine details
+3. **Parameter efficiency**: Same network reused K times = K× effective depth
+
+### Why Bidirectional?
+
+Autoregressive models suffer from:
+- **Exposure bias**: Training sees ground truth, inference sees own predictions
+- **Error accumulation**: Early mistakes propagate
+- **Left-to-right bias**: Can't revise earlier tokens
+
+Bidirectional attention avoids these by predicting all positions with full context.
+
+### Why Variable Corruption?
+
+Fixed masking ratio (e.g., 15% in BERT) trains the model for one specific task. Variable corruption (10-100%) trains the model to handle **any** level of uncertainty, essential for generation where the canvas evolves from fully masked to fully filled.
 
 ---
 
-## Requirements
+## Limitations & Future Work
 
-```
-torch>=2.0
-transformers
-datasets
-```
+### Current Limitations
+
+1. **Scale**: 13-27M params is tiny; benefits may amplify at scale
+2. **Re-masking instability**: Confidence head needs better calibration
+3. **Speed**: K forward passes per generation step (vs 1 for autoregressive)
+4. **Training data**: Only tested on TinyStories
+
+### Future Directions
+
+1. **Hierarchical latents**: z_H (structure) + z_L (details), like TRM
+2. **Learned halting**: ACT to decide K dynamically per sequence
+3. **Hybrid generation**: Autoregressive for speed, refinement for quality
+4. **Instruction tuning**: Adapt for chat/reasoning tasks
 
 ---
 
-## Future Directions
+## References
 
-- [ ] Scale to 300M-1B parameters
-- [ ] Better confidence calibration for re-masking
-- [ ] Instruction tuning for chat capability
-- [ ] Explore hierarchical latent structure
+- **LLaDA**: [Large Language Diffusion Models](https://arxiv.org/abs/2502.09992)
+- **TRM**: [Tiny Recursive Models](https://arxiv.org/abs/2510.04871)
+- **BERT**: [Bidirectional Encoder Representations](https://arxiv.org/abs/1810.04805)
+- **RoPE**: [Rotary Position Embedding](https://arxiv.org/abs/2104.09864)
+- **SwiGLU**: [GLU Variants Improve Transformer](https://arxiv.org/abs/2002.05202)
 
 ---
 
@@ -173,7 +170,7 @@ datasets
 
 > *Shimmer*: Tokens shimmer between states—uncertain, fluid—until they crystallize into text.
 
-Also inspired by Arcane's Shimmer: a transformative substance that grants power through iteration and change. 💜
+_ ... but not everything that shimmers is gold ... _
 
 ---
 
@@ -183,4 +180,4 @@ MIT
 
 ---
 
-*Built with curiosity and 無* 🖤
+*Built with curiosity and 無* 🖤 

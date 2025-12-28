@@ -1,0 +1,162 @@
+======================================================================
+SHIMMER MODEL EVALUATION
+======================================================================
+
+Loading checkpoint: checkpoints/gpt_12m_baseline_final.pt
+
+Model Type: GPT
+Model Config:
+  Hidden size: 320
+  Layers: 6
+  Heads: 5
+  Vocab size: 9995
+  Parameters: 10,821,120
+Tokenizer loaded: vocab_size=9995 from tokenizers/shimmer_tinystories_9995.model
+  Tokenizer: custom (vocab=9995)
+
+======================================================================
+TEST 1: Basic Generation Quality
+======================================================================
+
+Prompt: 'Once upon a time'
+--------------------------------------------------
+  [T=0.7] Once upon a time, there there there there there there there there there there there there there there there there there there there there there there ...
+           (iters=50)
+  [T=0.9] Once upon a time, there there there there there there there there there there there there there there there there there there there there there there ...
+           (iters=50)
+
+Prompt: 'There was a little girl named'
+--------------------------------------------------
+  [T=0.7] There was a little girl named Lily and a little girl was a little girl was a big, a little girl was a little girl was a little boy was a little boy an...
+           (iters=50)
+  [T=0.9] There was a little girl named Susie and a little boy and a little boy was a small man was a little girl and a little girl and a little boy and two kid...
+           (iters=50)
+
+Prompt: 'The sun was shining and'
+--------------------------------------------------
+  [T=0.7] The sun was shining and the cat was was sun sun sun sun sun sun sun sun sun sun sun sun sun sun sun sun sun sun sun sun sun sun sun sun sun sun sun su...
+           (iters=50)
+  [T=0.9] The sun was shining and the bear bear bear bear was was white white fish was sun sun sun sun sun sun sun sun sun sun sun sun sun sun sun sun sun sun s...
+           (iters=50)
+
+Prompt: 'One day, a small cat'
+--------------------------------------------------
+  [T=0.7] One day, a small cat named day, a bright day, a sunny day, a sunny day, a day, there was a sunny day, two day, two bright bright bright sunny day, lit...
+           (iters=50)
+  [T=0.9] One day, a small cat named sunny day, a cold cold cold cold cold cold cold cold cold day, there was a fine day, a bright bright sunny day, there was s...
+           (iters=50)
+
+
+======================================================================
+TEST 2: Repetition Analysis
+======================================================================
+
+  Avg consecutive repetitions: 26.25
+  Avg bigram repetition rate: 68.87%
+  Avg trigram repetition rate: 59.88%
+
+======================================================================
+TEST 3: Confidence Head Analysis
+======================================================================
+
+  [N/A] GPT has no confidence head
+
+======================================================================
+TEST 4: Logical Coherence
+======================================================================
+
+  Loading semantic model: all-MiniLM-L6-v2...
+  Combined Coherence: 80.0%
+    - Keyword match:  40.0%
+    - Semantic match: 60.0%
+  (Multi-token generation + semantic similarity)
+
+  [✓ PASS] 'The cat was hungry so it...'
+           Generated: "decided sun sun sun sun sun sun sun sun sun..."
+           Matched: semantic flow: 0.77
+  [✓ PASS] 'It was raining outside so they stayed...'
+           Generated: "inside the morning, tom and a morning, tommy..."
+           Matched: keywords: ['inside']
+  [✗ FAIL] 'The sun set and the sky turned...'
+           Generated: "a little girl girl girl was sun sun sun sun..."
+           Expected any of: ['dark', 'orange', 'red', 'pink', 'night']...
+  [✓ PASS] 'The little girl was happy because she got a new...'
+           Generated: "toy truck was was fat fat cat cat cat cat..."
+           Matched: keywords: ['toy'], semantic flow: 0.73
+  [✓ PASS] 'The dog ran fast and caught the...'
+           Generated: "hoop was boy girl girl boy boy boy boy boy..."
+           Matched: semantic topics: ['ball', 'toy', 'frisbee']
+
+======================================================================
+TEST 5: Generation Methods Comparison
+======================================================================
+
+
+Method: autoregressive
+----------------------------------------
+  Once upon a time, there was a there there there there there there there there there there there there there there there ...
+  Once upon a time, there was a, there there there there there there there there there there there there there there there...
+  Once upon a time, there was a upon upon upon upon upon upon upon upon upon upon upon upon upon upon upon upon upon upon ...
+
+======================================================================
+TEST 6: Challenge Prompts
+======================================================================
+
+Prompt: 'Once upon a time, there was a little girl who love...'
+Output: Once upon a time, there was a little girl who loved to play in the garden. One sunny day, she saw there there there there there there there there there there there there there there there there there there there there there there there there there there there there there
+
+Prompt: 'The little boy was very sad because...'
+Output: The little boy was very sad because he was fat cat bear bear was bright sun sun sun sun sun sun sun sun sun sun sun sun sun sun sun sun sun sun sun sun sun sun
+
+Prompt: 'The brave knight drew his sword and...'
+Output: The brave knight drew his sword and was sun sun sun sun sun sun sun sun sun sun sun sun sun sun sun sun sun sun sun sun sun sun sun sun sun sun sun sun sun
+
+Prompt: '"Hello!" said the rabbit. The bear replied...'
+Output: "Hello!" said the rabbit. The bear replied, Mommy, mommy, Mommy, Mommy! ComeComeComeComeComeComeComeComeComeCome up!"!"!"!"!"!"!"!"!"!"
+
+
+======================================================================
+TEST 7: Perplexity (TinyStories Validation)
+======================================================================
+
+  Perplexity: 3.17
+  Avg Loss: 1.1528
+  Tokens evaluated: 16,466
+  [GOOD] Low perplexity indicates good language modeling
+
+======================================================================
+TEST 8: Generation Diversity
+======================================================================
+
+  Word diversity:   6.7%
+  Bigram diversity: 12.9%
+  Trigram diversity: 18.7%
+  Self-similarity:  33.3%
+  [WARN] Low diversity - generations are repetitive
+
+======================================================================
+TEST 9: Length Stress Test
+======================================================================
+
+  [⚠]  50 tokens: 296.9 tok/s, end_div=0.10, rep=0.98
+  [⚠] 100 tokens: 289.7 tok/s, end_div=0.10, rep=0.98
+  [⚠] 200 tokens: 295.6 tok/s, end_div=0.10, rep=0.99
+
+  [GOOD] Quality maintained across lengths
+
+======================================================================
+EVALUATION SUMMARY
+======================================================================
+
+Model: 10,821,120 parameters
+Coherence Rate: 80.0%
+Confidence Gap: 0.0000
+Bigram Repetition: 68.9%
+Perplexity: 3.17
+Diversity: 12.9%
+
+Overall Quality: FAIR (1/3)
+
+======================================================================
+Evaluation complete!
+======================================================================

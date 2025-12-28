@@ -1,0 +1,174 @@
+======================================================================
+SHIMMER MODEL EVALUATION
+======================================================================
+
+Loading checkpoint: checkpoints/lira_12m_progressive_final.pt
+
+Model Type: LIRA
+Model Config:
+  Hidden size: 288
+  Layers: 6
+  Heads: 6
+  Vocab size: 9995
+  Mask token ID: 4
+  Parameters: 11,733,696
+Tokenizer loaded: vocab_size=9995 from tokenizers/shimmer_tinystories_9995.model
+  Tokenizer: custom (vocab=9995)
+
+======================================================================
+TEST 1: Basic Generation Quality
+======================================================================
+
+Prompt: 'Once upon a time'
+--------------------------------------------------
+  [T=0.7] Once upon a time, there was a little girl named Lily. One day, Lily's mom took her to the store. They saw many interesting things. They saw trees, flo...
+           (iters=51)
+  [T=0.9] Once upon a time, there was a little girl named Lily. She loved to play with her toys and run around her house. One day, Lily's mom asked her to clean...
+           (iters=51)
+
+Prompt: 'There was a little girl named'
+--------------------------------------------------
+  [T=0.7] There was a little girl named Lily. Lily loved to play with her dolls and make them talk to her dolls. One day, Lily's mom asked her to play with her ...
+           (iters=51)
+  [T=0.9] There was a little girl named Lily. Lily had a pink dress that she loved to wear it every day. One day, Lily's mom gave her a new dress for her birthd...
+           (iters=51)
+
+Prompt: 'The sun was shining and'
+--------------------------------------------------
+  [T=0.7] The sun was shining and the sun was shining. The sun was shining, and the sun was shining. ⁇ The sun was shining and the sun was shining. The sun was ...
+           (iters=51)
+  [T=0.9] The sun was shining and the sun was shining down. ⁇ The sun was shining, and the sky was blue. The sun was shining and the sun was shining. The sun wa...
+           (iters=51)
+
+Prompt: 'One day, a small cat'
+--------------------------------------------------
+  [T=0.7] One day, a small cat came to the house. The cat was scared and wanted to play. ⁇ The cat went to the cat and saw the cat. The cat was happy and safe. ...
+           (iters=51)
+  [T=0.9] One day, a small cat saw the big cat and the big cat. The cat and the big cat were happy to fight the big cat. The big cat was the cat, the big cat, a...
+           (iters=51)
+
+
+======================================================================
+TEST 2: Repetition Analysis
+======================================================================
+
+  Avg consecutive repetitions: 0.25
+  Avg bigram repetition rate: 29.32%
+  Avg trigram repetition rate: 19.53%
+
+======================================================================
+TEST 3: Confidence Head Analysis
+======================================================================
+
+  Mean confidence (all): 0.3273
+  Mean confidence (filled tokens): 0.8267
+  Mean confidence (masked tokens): 0.1962
+  Confidence gap (filled - masked): 0.6305
+  [GOOD] Model distinguishes filled from masked positions
+
+======================================================================
+TEST 4: Logical Coherence
+======================================================================
+
+  Loading semantic model: all-MiniLM-L6-v2...
+  Combined Coherence: 100.0%
+    - Keyword match:  40.0%
+    - Semantic match: 100.0%
+  (Multi-token generation + semantic similarity)
+
+  [✓ PASS] 'The cat was hungry so it...'
+           Generated: "decided to ask the cat. ⁇ the cat was..."
+           Matched: semantic flow: 0.84
+  [✓ PASS] 'It was raining outside so they stayed...'
+           Generated: "in the garden. ⁇ but they were not very..."
+           Matched: semantic topics: ['indoors', 'inside', 'home']
+  [✓ PASS] 'The sun set and the sky turned...'
+           Generated: "dark blue. the sun was shining, and the..."
+           Matched: keywords: ['dark'], semantic flow: 0.78
+  [✓ PASS] 'The little girl was happy because she got a new...'
+           Generated: "friend. they went to the park and the park..."
+           Matched: keywords: ['friend'], semantic flow: 0.79
+  [✓ PASS] 'The dog ran fast and caught the...'
+           Generated: "dog. the dog was small and scared. it..."
+           Matched: semantic topics: ['toy']
+
+======================================================================
+TEST 5: Generation Methods Comparison
+======================================================================
+
+
+Method: topk
+----------------------------------------
+  Once upon a time, there was a little girl named Lily. She loved to play with her toys all day long. One day, Lily's mom ...
+  Once upon a time, there was a little girl named Lily. She loved to play with her toys and run around in her backyard. On...
+  Once upon a time, there was a little girl named Lily. She loved to play with her dolls and make them talk. One day, Lily...
+
+Method: remasking
+----------------------------------------
+  Once upon a time, there was a little girl named Lily. Lily loved to play and and her her her her her.,,,,,,,, her her he...
+  Once upon a time, there was a little girl named Lily. Lily loved to play and and her her her her her.,,,,,,,, her her he...
+  Once upon a time, there was an ancient bear. He lived in a big, with the the....,,,,,,,, the the the the the the the the...
+
+======================================================================
+TEST 6: Challenge Prompts
+======================================================================
+
+Prompt: 'Once upon a time, there was a little girl who love...'
+Output: Once upon a time, there was a little girl who loved to play in the garden. One sunny day, she saw a bird flying in the sky. The bird was blue and had a long tail. The little girl thought the bird was very pretty and explained to
+
+Prompt: 'The little boy was very sad because...'
+Output: The little boy was very sad because he really wanted to play with his toys. He asked his mom if he could play with him. His mom said yes and the little boy went to
+
+Prompt: 'The brave knight drew his sword and...'
+Output: The brave knight drew his sword and he was very proud. He was very proud of himself and now he was proud of his work. He was very proud of his work and he had
+
+Prompt: '"Hello!" said the rabbit. The bear replied...'
+Output: "Hello!" said the rabbit. The bear replied, "Hello, I'm Tom. Do you want to play with me?" The bear said, "Yes, please." He said, "
+
+
+======================================================================
+TEST 7: Perplexity (TinyStories Validation)
+======================================================================
+
+  Perplexity: 2.18
+  Avg Loss: 0.7790
+  Masked tokens evaluated: 4,853
+  (Mask ratio: 30%)
+  [GOOD] Low perplexity indicates good language modeling
+
+======================================================================
+TEST 8: Generation Diversity
+======================================================================
+
+  Word diversity:   33.5%
+  Bigram diversity: 53.7%
+  Trigram diversity: 63.4%
+  Self-similarity:  0.0%
+  [OK] Moderate diversity
+
+======================================================================
+TEST 9: Length Stress Test
+======================================================================
+
+  [✓]  50 tokens: 303.0 tok/s, end_div=1.00, rep=0.00
+  [✓] 100 tokens: 294.5 tok/s, end_div=0.90, rep=0.00
+  [✓] 200 tokens: 299.1 tok/s, end_div=1.00, rep=0.33
+
+  [GOOD] Quality maintained across lengths
+
+======================================================================
+EVALUATION SUMMARY
+======================================================================
+
+Model: 11,733,696 parameters
+Coherence Rate: 100.0%
+Confidence Gap: 0.6305
+Bigram Repetition: 29.3%
+Perplexity: 2.18
+Diversity: 53.7%
+
+Overall Quality: EXCELLENT (3/3)
+
+======================================================================
+Evaluation complete!
+======================================================================
