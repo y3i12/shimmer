@@ -212,7 +212,7 @@ def main():
     parser.add_argument("--prompt", type=str, default=None,
                         help="Prompt to generate from (auto from dataset if not specified)")
     parser.add_argument("--dataset", type=str, default=None,
-                        choices=["tinystories", "everyday", "bitext", "arena"],
+                        choices=["tinystories", "everyday", "bitext", "arena", "blend", "agentic"],
                         help="Dataset (for default prompt, auto-detected from checkpoint)")
     parser.add_argument("--num_samples", type=int, default=3,
                         help="Number of samples to generate")
