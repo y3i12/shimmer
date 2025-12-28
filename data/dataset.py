@@ -9,6 +9,10 @@ Key feature: Variable corruption ratio (LLaDA-style)
 import os
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
+# HuggingFace authentication for gated datasets
+# Set HF_TOKEN env var or run: huggingface-cli login
+HF_TOKEN = os.environ.get("HF_TOKEN", None)
+
 import torch
 from torch.utils.data import Dataset, DataLoader
 from typing import Optional
@@ -212,7 +216,7 @@ def load_tinystories(
     from datasets import load_dataset
 
     print(f"Loading TinyStories ({split})...")
-    dataset = load_dataset("roneneldan/TinyStories", split=split, streaming=True)
+    dataset = load_dataset("roneneldan/TinyStories", split=split, streaming=True, token=HF_TOKEN)
 
     # Collect samples
     random.seed(seed)
@@ -417,7 +421,7 @@ def load_shimmer_blend(
     # --- 1. SlimOrca-Dedup (40%) - General instruction following ---
     print(f"Loading SlimOrca-Dedup ({n_slimorca} samples)...")
     try:
-        slimorca = load_dataset("Open-Orca/SlimOrca-Dedup", split="train", streaming=True)
+        slimorca = load_dataset("Open-Orca/SlimOrca-Dedup", split="train", streaming=True, token=HF_TOKEN)
         count = 0
         for example in slimorca:
             if count >= n_slimorca:
@@ -443,7 +447,7 @@ def load_shimmer_blend(
     # --- 2. Orca-Math (20%) - Math reasoning ---
     print(f"Loading Orca-Math ({n_math} samples)...")
     try:
-        orca_math = load_dataset("microsoft/orca-math-word-problems-200k", split="train", streaming=True)
+        orca_math = load_dataset("microsoft/orca-math-word-problems-200k", split="train", streaming=True, token=HF_TOKEN)
         count = 0
         for example in orca_math:
             if count >= n_math:
@@ -461,7 +465,7 @@ def load_shimmer_blend(
     # --- 3. UltraChat (25%) - Multi-turn dialogue ---
     print(f"Loading UltraChat ({n_ultrachat} samples)...")
     try:
-        ultrachat = load_dataset("HuggingFaceH4/ultrachat_200k", split="train_sft", streaming=True)
+        ultrachat = load_dataset("HuggingFaceH4/ultrachat_200k", split="train_sft", streaming=True, token=HF_TOKEN)
         count = 0
         for example in ultrachat:
             if count >= n_ultrachat:
@@ -567,7 +571,7 @@ def load_agentic_blend(
     # --- 1. Nemotron-Post-Training-v2 (30%) - Multi-domain ---
     print(f"Loading Nemotron-v2 ({n_nemotron} samples)...")
     try:
-        nemotron = load_dataset("nvidia/Nemotron-Post-Training-Dataset-v2", split="train", streaming=True)
+        nemotron = load_dataset("nvidia/Nemotron-Post-Training-Dataset-v2", split="train", streaming=True, token=HF_TOKEN)
         count = 0
         for example in nemotron:
             if count >= n_nemotron:
@@ -599,7 +603,7 @@ def load_agentic_blend(
     # --- 2. OpenMathInstruct-2 (22%) - Math reasoning ---
     print(f"Loading OpenMathInstruct-2 ({n_math} samples)...")
     try:
-        mathinstruct = load_dataset("nvidia/OpenMathInstruct-2", split="train", streaming=True)
+        mathinstruct = load_dataset("nvidia/OpenMathInstruct-2", split="train", streaming=True, token=HF_TOKEN)
         count = 0
         for example in mathinstruct:
             if count >= n_math:
@@ -617,7 +621,7 @@ def load_agentic_blend(
     # --- 3. OpenHermes-2.5 (15%) - Instruction following ---
     print(f"Loading OpenHermes-2.5 ({n_hermes} samples)...")
     try:
-        hermes = load_dataset("teknium/OpenHermes-2.5", split="train", streaming=True)
+        hermes = load_dataset("teknium/OpenHermes-2.5", split="train", streaming=True, token=HF_TOKEN)
         count = 0
         for example in hermes:
             if count >= n_hermes:
@@ -643,7 +647,7 @@ def load_agentic_blend(
     # --- 4. Ling-Coder-SFT (15%) - Code ---
     print(f"Loading Ling-Coder-SFT ({n_code} samples)...")
     try:
-        lingcoder = load_dataset("inclusiveai/Ling-Coder-SFT", split="train", streaming=True)
+        lingcoder = load_dataset("inclusiveai/Ling-Coder-SFT", split="train", streaming=True, token=HF_TOKEN)
         count = 0
         for example in lingcoder:
             if count >= n_code:
@@ -678,7 +682,7 @@ def load_agentic_blend(
     # --- 5. smoltalk (12%) - Diverse conversations ---
     print(f"Loading smoltalk ({n_smol} samples)...")
     try:
-        smoltalk = load_dataset("HuggingFaceTB/smoltalk", "all", split="train", streaming=True)
+        smoltalk = load_dataset("HuggingFaceTB/smoltalk", "all", split="train", streaming=True, token=HF_TOKEN)
         count = 0
         for example in smoltalk:
             if count >= n_smol:
@@ -704,7 +708,7 @@ def load_agentic_blend(
     # --- 6. xlam-function-calling (6%) - Agentic/tool use ---
     print(f"Loading xlam-function-calling ({n_function} samples)...")
     try:
-        xlam = load_dataset("Salesforce/xlam-function-calling-60k", split="train", streaming=True)
+        xlam = load_dataset("Salesforce/xlam-function-calling-60k", split="train", streaming=True, token=HF_TOKEN)
         count = 0
         for example in xlam:
             if count >= n_function:
