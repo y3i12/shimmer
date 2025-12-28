@@ -15,4 +15,19 @@
 **/node_modules
 */.diffs/**
 
-checkpoints/phase*.pt
+# Checkpoints (large files - use HuggingFace Hub instead)
+checkpoints/*.pt
+checkpoints/**/*.pt
+
+# Tokenizers (can be regenerated or downloaded)
+tokenizers/*.model
+tokenizers/*.vocab
+
+# Data cache
+data_cache/
+.cache/
+
+# Logs
+*.log
+runs/
+wandb/

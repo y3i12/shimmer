@@ -1,0 +1,29 @@
+# Shimmer/LIRA - Core Dependencies
+# ================================
+
+# Core ML
+torch>=2.0.0
+numpy>=1.24.0
+
+# Tokenization
+sentencepiece>=0.1.99
+
+# Datasets
+datasets>=2.14.0
+
+# HuggingFace Hub (for checkpoint upload/download)
+huggingface_hub>=0.19.0
+
+# Optional: Evaluation metrics
+# ---------------------------
+# sentence-transformers>=2.2.0  # For semantic similarity in evaluate.py
+
+# Optional: Faster training
+# -------------------------
+# flash-attn>=2.0.0  # Requires CUDA 11.8+, speeds up attention
+# triton>=2.1.0      # For custom kernels
+
+# Optional: Mamba (production speed)
+# ----------------------------------
+# mamba-ssm>=1.2.0   # CUDA kernels for Mamba blocks
+# causal-conv1d>=1.1.0  # Fast causal convolution

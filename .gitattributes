@@ -10,3 +10,6 @@ checkpoints/shimmer_v1_29M1_384_12_12_10235V_phase_4.pt filter=lfs diff=lfs merg
 checkpoints/shimmer_v1_29M1_384_12_12_10235V_phase_4_train_3_epoch.pt filter=lfs diff=lfs merge=lfs -text
 checkpoints/lira_12m_progressive_final.pt filter=lfs diff=lfs merge=lfs -text
 checkpoints/gpt_12m_baseline_final.pt filter=lfs diff=lfs merge=lfs -text
+checkpoints/lira_50m_progressive_final.pt filter=lfs diff=lfs merge=lfs -text
+tokenizers/shimmer_tinystories_9995.model filter=lfs diff=lfs merge=lfs -text
+tokenizers/shimmer_tinystories_9995.vocab filter=lfs diff=lfs merge=lfs -text
