@@ -138,47 +138,187 @@ def get_semantic_checker() -> SemanticCoherenceChecker:
 
 
 # ============================================================================
-# Test Prompts for Story Generation
+# Dataset-Specific Evaluation Presets
 # ============================================================================
 
-STORY_PROMPTS = [
-    "Once upon a time",
-    "There was a little girl named",
-    "The sun was shining and",
-    "One day, a small cat",
-    "In a big forest, there lived",
-    "The little boy wanted to",
-    "A friendly dog named Max",
-    "The princess looked at the",
-]
+EVAL_PRESETS = {
+    "tinystories": {
+        "name": "TinyStories",
+        "hf_dataset": "roneneldan/TinyStories",
+        "hf_split": "validation",
+        "text_field": "text",
+        "tokenizer_pattern": "shimmer_tinystories_{vocab_size}.model",
+        "prompts": [
+            "Once upon a time",
+            "There was a little girl named",
+            "The sun was shining and",
+            "One day, a small cat",
+            "In a big forest, there lived",
+            "The little boy wanted to",
+            "A friendly dog named Max",
+            "The princess looked at the",
+        ],
+        "challenge_prompts": [
+            "Once upon a time, there was a little girl who loved to play in the garden. One sunny day, she",
+            "The little boy was very sad because",
+            "The brave knight drew his sword and",
+            '"Hello!" said the rabbit. The bear replied',
+        ],
+        "coherence_tests": [
+            ("The cat was hungry so it", ["ate", "food", "fish", "milk", "eat", "dinner", "fed"]),
+            ("It was raining outside so they stayed", ["inside", "home", "house", "dry", "warm", "room", "indoors"]),
+            ("The sun set and the sky turned", ["dark", "orange", "red", "pink", "night", "black", "purple", "colors"]),
+            ("The little girl was happy because she got a new", ["toy", "doll", "dress", "gift", "present", "book", "friend"]),
+            ("The dog ran fast and caught the", ["ball", "stick", "frisbee", "toy", "bone", "treat"]),
+        ],
+    },
+    "agentic": {
+        "name": "Agentic/Instruction",
+        "hf_dataset": "teknium/OpenHermes-2.5",
+        "hf_split": "train",
+        "text_field": "conversations",  # Needs special handling
+        "tokenizer_pattern": "shimmer_agentic_{vocab_size}.model",
+        "prompts": [
+            "Write a function that",
+            "Explain how to",
+            "What is the difference between",
+            "How would you implement",
+            "Can you help me understand",
+            "Please provide a step-by-step",
+            "The best approach to solve this",
+            "Here is a solution for",
+        ],
+        "challenge_prompts": [
+            "Write a Python function that takes a list of numbers and returns the sum of all even numbers. The function should",
+            "Explain the concept of recursion in programming, including",
+            "What are the key differences between REST and GraphQL APIs? First,",
+            "How would you optimize a database query that is running slowly? Start by",
+        ],
+        "coherence_tests": [
+            ("To sort a list in Python, you can use", ["sort", "sorted", "list", "function", "method", "ascending"]),
+            ("The main difference between a list and a tuple is", ["mutable", "immutable", "change", "modify", "fixed"]),
+            ("When debugging code, you should first", ["check", "print", "log", "test", "error", "trace", "breakpoint"]),
+            ("A good API design should include", ["documentation", "endpoints", "authentication", "versioning", "REST"]),
+            ("To handle errors in Python, use", ["try", "except", "catch", "exception", "error", "raise"]),
+        ],
+    },
+    "code": {
+        "name": "Code Generation",
+        "hf_dataset": "bigcode/starcoderdata",
+        "hf_split": "train",
+        "text_field": "content",
+        "tokenizer_pattern": "shimmer_code_{vocab_size}.model",
+        "prompts": [
+            "def ",
+            "class ",
+            "import ",
+            "function ",
+            "# TODO:",
+            "async def ",
+            "public static void",
+            "const ",
+        ],
+        "challenge_prompts": [
+            "def calculate_fibonacci(n):\n    \"\"\"Calculate the nth Fibonacci number.\"\"\"\n    ",
+            "class UserAuthentication:\n    def __init__(self):\n        ",
+            "# Implement a binary search algorithm\ndef binary_search(arr, target):\n    ",
+            "async def fetch_data(url):\n    \"\"\"Fetch data from URL with retry logic.\"\"\"\n    ",
+        ],
+        "coherence_tests": [
+            ("def add(a, b):\n    return", ["a + b", "sum", "a+b", "result"]),
+            ("if x > 0:\n    print", ["x", "positive", "(", "result"]),
+            ("for i in range(10):\n    ", ["print", "i", "sum", "append", "result"]),
+            ("try:\n    result = divide(a, b)\nexcept", ["ZeroDivisionError", "Exception", "Error", "except"]),
+            ("import os\npath = os.path.", ["join", "exists", "dirname", "basename"]),
+        ],
+    },
+    "chat": {
+        "name": "Chat/Conversation",
+        "hf_dataset": "lmsys/lmsys-chat-1m",
+        "hf_split": "train",
+        "text_field": "conversation",
+        "tokenizer_pattern": "shimmer_chat_{vocab_size}.model",
+        "prompts": [
+            "Hello! How can I",
+            "Thank you for your",
+            "I understand your concern about",
+            "That's a great question!",
+            "Let me explain",
+            "Based on what you said,",
+            "I'd be happy to help",
+            "Here's what I think:",
+        ],
+        "challenge_prompts": [
+            "User: What's the weather like today?\nAssistant: I don't have access to real-time weather data, but",
+            "User: Can you help me write a poem?\nAssistant: Of course! Let me",
+            "User: I'm feeling stressed about work.\nAssistant: I understand how",
+            "User: Explain quantum computing simply.\nAssistant: Quantum computing is",
+        ],
+        "coherence_tests": [
+            ("Thank you for asking! I'd be happy to", ["help", "assist", "explain", "answer", "provide"]),
+            ("I apologize, but I cannot", ["help", "assist", "provide", "access", "do"]),
+            ("That's an interesting question. The answer is", ["that", "yes", "no", "it", "depends"]),
+            ("Based on your description, I recommend", ["you", "that", "trying", "using", "the"]),
+            ("Let me break this down into", ["steps", "parts", "sections", "simple", "points"]),
+        ],
+    },
+    "general": {
+        "name": "General Text",
+        "hf_dataset": None,  # No specific dataset
+        "hf_split": None,
+        "text_field": None,
+        "tokenizer_pattern": "shimmer_{vocab_size}.model",
+        "prompts": [
+            "The ",
+            "In the ",
+            "It was ",
+            "There ",
+            "When ",
+            "After ",
+            "Before ",
+            "As ",
+        ],
+        "challenge_prompts": [
+            "The most important thing to remember about this topic is that",
+            "In conclusion, we can see that the evidence suggests",
+            "There are several key factors to consider when",
+            "When analyzing this situation, it becomes clear that",
+        ],
+        "coherence_tests": [
+            ("The capital of France is", ["Paris", "city", "located", "known"]),
+            ("Water freezes at", ["zero", "0", "degrees", "temperature", "cold"]),
+            ("The sun rises in the", ["east", "morning", "sky", "horizon"]),
+            ("Birds can fly because they have", ["wings", "feathers", "light", "hollow"]),
+            ("To make a sandwich, first you need", ["bread", "ingredients", "slice", "spread"]),
+        ],
+    },
+}
 
-CHALLENGE_PROMPTS = [
-    # Longer context
-    "Once upon a time, there was a little girl who loved to play in the garden. One sunny day, she",
-    # Emotional content
-    "The little boy was very sad because",
-    # Action sequence
-    "The brave knight drew his sword and",
-    # Dialogue setup
-    '"Hello!" said the rabbit. The bear replied',
-]
+# Default preset (for backward compatibility)
+DEFAULT_PRESET = "tinystories"
 
-COHERENCE_PROMPTS = [
-    # Should continue logically - expected words should appear in multi-token continuation
-    ("The cat was hungry so it", ["ate", "food", "fish", "milk", "eat", "dinner", "fed"]),
-    ("It was raining outside so they stayed", ["inside", "home", "house", "dry", "warm", "room", "indoors"]),
-    ("The sun set and the sky turned", ["dark", "orange", "red", "pink", "night", "black", "purple", "colors"]),
-    ("The little girl was happy because she got a new", ["toy", "doll", "dress", "gift", "present", "book", "friend"]),
-    ("The dog ran fast and caught the", ["ball", "stick", "frisbee", "toy", "bone", "treat"]),
-]
+
+def get_eval_preset(name: str) -> dict:
+    """Get evaluation preset by name."""
+    if name not in EVAL_PRESETS:
+        available = ", ".join(EVAL_PRESETS.keys())
+        raise ValueError(f"Unknown preset '{name}'. Available: {available}")
+    return EVAL_PRESETS[name]
+
+
+# Backward compatibility aliases
+STORY_PROMPTS = EVAL_PRESETS["tinystories"]["prompts"]
+CHALLENGE_PROMPTS = EVAL_PRESETS["tinystories"]["challenge_prompts"]
+COHERENCE_PROMPTS = EVAL_PRESETS["tinystories"]["coherence_tests"]
 
 
 # ============================================================================
 # Tokenizer Loading
 # ============================================================================
 
-def load_tokenizer(vocab_size: int, tokenizer_dir: str = "tokenizers"):
-    """Load the appropriate tokenizer based on vocab_size."""
+def load_tokenizer(vocab_size: int, tokenizer_dir: str = "tokenizers",
+                   preset: str = DEFAULT_PRESET, tokenizer_path: str = None):
+    """Load the appropriate tokenizer based on vocab_size and preset."""
     if vocab_size == 0 or vocab_size >= 50000:
         from transformers import AutoTokenizer
         tokenizer = AutoTokenizer.from_pretrained("gpt2")
@@ -187,11 +327,39 @@ def load_tokenizer(vocab_size: int, tokenizer_dir: str = "tokenizers"):
         return tokenizer, "gpt2"
     else:
         from lira.tokenizer import ShimmerTokenizer
-        tokenizer_path = Path(tokenizer_dir) / f"shimmer_tinystories_{vocab_size}.model"
-        if not tokenizer_path.exists():
-            raise FileNotFoundError(f"Tokenizer not found at {tokenizer_path}")
-        tokenizer = ShimmerTokenizer(str(tokenizer_path))
-        return tokenizer, "custom"
+
+        # Try explicit path first
+        if tokenizer_path:
+            tok_path = Path(tokenizer_path)
+            if tok_path.exists():
+                tokenizer = ShimmerTokenizer(str(tok_path))
+                return tokenizer, "custom"
+
+        # Try preset pattern
+        eval_preset = get_eval_preset(preset)
+        pattern = eval_preset["tokenizer_pattern"]
+        tok_path = Path(tokenizer_dir) / pattern.format(vocab_size=vocab_size)
+
+        if tok_path.exists():
+            tokenizer = ShimmerTokenizer(str(tok_path))
+            return tokenizer, "custom"
+
+        # Fallback: try any matching tokenizer
+        for fallback_pattern in [
+            f"shimmer_*_{vocab_size}.model",
+            f"shimmer_{vocab_size}.model",
+            f"*_{vocab_size}.model",
+        ]:
+            matches = list(Path(tokenizer_dir).glob(fallback_pattern))
+            if matches:
+                tokenizer = ShimmerTokenizer(str(matches[0]))
+                print(f"  Note: Using fallback tokenizer: {matches[0].name}")
+                return tokenizer, "custom"
+
+        raise FileNotFoundError(
+            f"Tokenizer not found. Tried: {tok_path}\n"
+            f"  Use --tokenizer_path to specify explicit path"
+        )
 
 
 def encode(tokenizer, tokenizer_type: str, text: str) -> list[int]:
@@ -559,22 +727,61 @@ def test_perplexity(
     mask_ratio: float = 0.3,
     device: str = "cuda",
     model_type: str = "lira",
+    preset: str = DEFAULT_PRESET,
 ) -> dict:
     """
-    Calculate perplexity on TinyStories validation data.
+    Calculate perplexity on validation data from the specified preset.
 
     For LIRA: Masked reconstruction perplexity
     For GPT: Next-token prediction perplexity (standard)
     """
     model.eval()
 
-    # Load TinyStories validation
+    eval_preset = get_eval_preset(preset)
+
+    # Load validation dataset based on preset
     try:
         from datasets import load_dataset
-        dataset = load_dataset("roneneldan/TinyStories", split="validation")
-        texts = [dataset[i]["text"] for i in range(min(num_samples, len(dataset)))]
+
+        if eval_preset["hf_dataset"] is None:
+            return {"error": f"No validation dataset for preset '{preset}'", "skipped": True}
+
+        dataset = load_dataset(
+            eval_preset["hf_dataset"],
+            split=eval_preset["hf_split"],
+            trust_remote_code=True
+        )
+
+        # Extract text based on field type
+        text_field = eval_preset["text_field"]
+        texts = []
+
+        for i in range(min(num_samples, len(dataset))):
+            item = dataset[i]
+
+            if text_field == "conversations":
+                # Handle conversation format (OpenHermes style)
+                if isinstance(item.get("conversations"), list):
+                    conv_text = " ".join(
+                        msg.get("value", "") for msg in item["conversations"]
+                        if isinstance(msg, dict)
+                    )
+                    texts.append(conv_text)
+            elif text_field == "conversation":
+                # Handle lmsys chat format
+                if isinstance(item.get("conversation"), list):
+                    conv_text = " ".join(
+                        str(msg) for msg in item["conversation"]
+                    )
+                    texts.append(conv_text)
+            elif text_field in item:
+                texts.append(item[text_field])
+
+        if not texts:
+            return {"error": f"No valid texts extracted from {eval_preset['name']}", "skipped": True}
+
     except Exception as e:
-        return {"error": f"Could not load TinyStories: {e}"}
+        return {"error": f"Could not load {eval_preset['name']}: {e}"}
 
     total_loss = 0.0
     total_tokens = 0
@@ -783,6 +990,11 @@ def run_evaluation(args):
     print("SHIMMER MODEL EVALUATION")
     print(f"{'='*70}\n")
 
+    # Load preset
+    preset = args.preset
+    eval_preset = get_eval_preset(preset)
+    print(f"Evaluation Preset: {eval_preset['name']}")
+
     # Load checkpoint
     print(f"Loading checkpoint: {args.checkpoint}")
     checkpoint = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
@@ -821,7 +1033,10 @@ def run_evaluation(args):
     print(f"  Parameters: {param_count:,}")
 
     # Load tokenizer
-    tokenizer, tokenizer_type = load_tokenizer(config.vocab_size, args.tokenizer_dir)
+    tokenizer, tokenizer_type = load_tokenizer(
+        config.vocab_size, args.tokenizer_dir,
+        preset=preset, tokenizer_path=args.tokenizer_path
+    )
     print(f"  Tokenizer: {tokenizer_type} (vocab={config.vocab_size})")
 
     results = {"config": {
@@ -831,7 +1046,13 @@ def run_evaluation(args):
         "vocab_size": config.vocab_size,
         "parameters": param_count,
         "model_type": model_type,
+        "preset": preset,
     }}
+
+    # Get prompts from preset
+    test_prompts = eval_preset["prompts"]
+    challenge_prompts = eval_preset["challenge_prompts"]
+    coherence_tests = eval_preset["coherence_tests"]
 
     # ========================================================================
     # Test 1: Basic Generation Quality
@@ -841,7 +1062,7 @@ def run_evaluation(args):
     print(f"{'='*70}\n")
 
     generations = []
-    for prompt in STORY_PROMPTS[:args.num_prompts]:
+    for prompt in test_prompts[:args.num_prompts]:
         print(f"Prompt: '{prompt}'")
         print("-" * 50)
 
@@ -884,7 +1105,7 @@ def run_evaluation(args):
 
     conf_analysis = analyze_confidence(
         model, tokenizer, tokenizer_type,
-        STORY_PROMPTS[:4], device=args.device,
+        test_prompts[:4], device=args.device,
         model_type=model_type
     )
 
@@ -913,7 +1134,7 @@ def run_evaluation(args):
 
     coherence = test_coherence(
         model, tokenizer, tokenizer_type,
-        COHERENCE_PROMPTS, device=args.device,
+        coherence_tests, device=args.device,
         model_type=model_type
     )
     print(f"  Combined Coherence: {coherence['coherence_rate']:.1%}")
@@ -980,7 +1201,7 @@ def run_evaluation(args):
         print("TEST 6: Challenge Prompts")
         print(f"{'='*70}\n")
 
-        for prompt in CHALLENGE_PROMPTS:
+        for prompt in challenge_prompts:
             print(f"Prompt: '{prompt[:50]}...'")
             text, meta = generate_sample(
                 model, tokenizer, tokenizer_type, prompt,
@@ -997,13 +1218,14 @@ def run_evaluation(args):
     ppl_result = None
     if args.full:
         print(f"\n{'='*70}")
-        print("TEST 7: Perplexity (TinyStories Validation)")
+        print(f"TEST 7: Perplexity ({eval_preset['name']} Validation)")
         print(f"{'='*70}\n")
 
         ppl_result = test_perplexity(
             model, tokenizer, tokenizer_type,
             num_samples=100, device=args.device,
-            model_type=model_type
+            model_type=model_type,
+            preset=preset
         )
 
         if "error" in ppl_result:
@@ -1037,7 +1259,7 @@ def run_evaluation(args):
 
         diversity_result = test_diversity(
             model, tokenizer, tokenizer_type,
-            STORY_PROMPTS[:3],  # Use first 3 prompts
+            test_prompts[:3],  # Use first 3 prompts
             num_generations=5,
             max_tokens=40,
             device=args.device,
@@ -1139,10 +1361,15 @@ def main():
     parser = argparse.ArgumentParser(description="Evaluate Shimmer checkpoint")
     parser.add_argument("--checkpoint", type=str, required=True,
                         help="Path to checkpoint file")
+    parser.add_argument("--preset", type=str, default=DEFAULT_PRESET,
+                        choices=list(EVAL_PRESETS.keys()),
+                        help=f"Evaluation preset (default: {DEFAULT_PRESET})")
     parser.add_argument("--device", type=str, default="cuda",
                         help="Device (cuda/cpu)")
     parser.add_argument("--tokenizer_dir", type=str, default="tokenizers",
                         help="Tokenizer directory")
+    parser.add_argument("--tokenizer_path", type=str, default=None,
+                        help="Explicit tokenizer path (overrides preset pattern)")
     parser.add_argument("--num_prompts", type=int, default=4,
                         help="Number of prompts to test")
     parser.add_argument("--max_tokens", type=int, default=50,
