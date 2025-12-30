@@ -10,8 +10,10 @@ Models:
 Phases (apply to both models):
 1. Single refine pass - baseline masked reconstruction
 2. Multiple refine passes - test iterative refinement hypothesis
-3. Variable corruption - LLaDA-style (10-100% masking)
-4. Confidence supervision - learn to predict uncertainty
+3. Confidence supervision - learn to predict uncertainty
+
+Note: Variable corruption (10-100%) was removed as the model learns implicit
+remasking through iterative refinement - explicit variable masking didn't help.
 """
 
 import os
@@ -55,45 +57,35 @@ class CurriculumStage:
     description: str
 
 
-# Progressive curriculum: 4 stages with fresh data each
+# Progressive curriculum: 3 stages with fresh data each
 CURRICULUM_STAGES = {
     1: CurriculumStage(
         stage=1,
-        num_refine_steps=1,
-        min_mask_ratio=0.3,
+        num_refine_steps=2,
+        min_mask_ratio=0.1,
         max_mask_ratio=0.3,
-        use_confidence_loss=False,
+        use_confidence_loss=True,
         data_start=0.0,
-        data_end=0.25,
-        description="Single pass, fixed 30% masking (baseline)"
+        data_end=0.333,
+        description="Double pass, variable 10-30% masking, with confidence (baseline)"
     ),
     2: CurriculumStage(
         stage=2,
         num_refine_steps=4,
-        min_mask_ratio=0.3,
-        max_mask_ratio=0.3,
-        use_confidence_loss=False,
-        data_start=0.25,
-        data_end=0.5,
-        description="Multiple passes (K=4), fixed 30% masking"
+        min_mask_ratio=0.15,
+        max_mask_ratio=0.45,
+        use_confidence_loss=True,
+        data_start=0.333,
+        data_end=0.666,
+        description="Multiple passes (K=4), variable 20-60% masking"
     ),
     3: CurriculumStage(
         stage=3,
-        num_refine_steps=4,
-        min_mask_ratio=0.1,
-        max_mask_ratio=1.0,
-        use_confidence_loss=False,
-        data_start=0.5,
-        data_end=0.75,
-        description="Multiple passes (K=4), variable corruption (10-100%)"
-    ),
-    4: CurriculumStage(
-        stage=4,
-        num_refine_steps=4,
-        min_mask_ratio=0.1,
-        max_mask_ratio=1.0,
+        num_refine_steps=8,
+        min_mask_ratio=0.2,
+        max_mask_ratio=0.6,
         use_confidence_loss=True,
-        data_start=0.75,
+        data_start=0.666,
         data_end=1.0,
         description="Full: iterative refinement with confidence supervision"
     ),
@@ -108,8 +100,8 @@ def parse_args():
                         help="Model architecture: lira (original), dialectic (backtracking), hybrid (global coherence), or gpt (autoregressive baseline)")
 
     # Phase selection
-    parser.add_argument("--phase", type=int, default=1, choices=[1, 2, 3, 4],
-                        help="Training phase (1-4)")
+    parser.add_argument("--phase", type=int, default=1, choices=[1, 2, 3],
+                        help="Training phase (1-3)")
 
     # Data
     parser.add_argument("--dataset", type=str, default="tinystories",
@@ -159,10 +151,10 @@ def parse_args():
                         help="Apply global attention every N steps during generation")
 
     # Phase-specific: masking
-    parser.add_argument("--min_mask_ratio", type=float, default=0.3,
-                        help="Min mask ratio (Phase 3 uses 0.1)")
-    parser.add_argument("--max_mask_ratio", type=float, default=0.3,
-                        help="Max mask ratio (Phase 3 uses 1.0)")
+    parser.add_argument("--min_mask_ratio", type=float, default=0.2,
+                        help="Min mask ratio (default 0.2, Phase 3 uses 0.1)")
+    parser.add_argument("--max_mask_ratio", type=float, default=0.6,
+                        help="Max mask ratio (default 0.6, Phase 3 uses 1.0)")
 
     # Training
     parser.add_argument("--epochs", type=int, default=10)
@@ -197,10 +189,10 @@ def parse_args():
 
     # Progressive curriculum (Option C: single run through all stages)
     parser.add_argument("--progressive", action="store_true",
-                        help="Progressive curriculum: single run through all 4 stages with fresh data each")
+                        help="Progressive curriculum: single run through all 3 stages with fresh data each")
     parser.add_argument("--stage_epochs", type=int, default=3,
-                        help="Epochs per curriculum stage (total epochs = 4 × stage_epochs)")
-    parser.add_argument("--start_stage", type=int, default=1, choices=[1, 2, 3, 4],
+                        help="Epochs per curriculum stage (total epochs = 3 × stage_epochs)")
+    parser.add_argument("--start_stage", type=int, default=1, choices=[1, 2, 3],
                         help="Start from this stage (useful for resuming progressive training)")
 
     return parser.parse_args()
@@ -209,28 +201,22 @@ def parse_args():
 def setup_phase(args):
     """Configure settings based on phase."""
     phase_configs = {
-        1: {  # Baseline: single pass, fixed masking
-            "num_refine_steps": 1,
-            "min_mask_ratio": 0.3,
+        1: {  # Baseline: single pass, variable masking
+            "num_refine_steps": 2,
+            "min_mask_ratio": 0.1,
             "max_mask_ratio": 0.3,
-            "description": "Single refine pass, fixed 30% masking"
+            "description": "Single refine pass, variable 20-60% masking"
         },
         2: {  # TRM hypothesis: multiple passes
             "num_refine_steps": 4,  # Try 4 iterations
-            "min_mask_ratio": 0.3,
-            "max_mask_ratio": 0.3,
-            "description": "Multiple refine passes (K=4), fixed 30% masking"
+            "min_mask_ratio": 0.15,
+            "max_mask_ratio": 0.45,
+            "description": "Multiple refine passes (K=4), variable 20-60% masking"
         },
-        3: {  # LLaDA-style: variable corruption
-            "num_refine_steps": 4,
-            "min_mask_ratio": 0.1,
-            "max_mask_ratio": 1.0,
-            "description": "Multiple passes (K=4), variable corruption (10-100%)"
-        },
-        4: {  # Full: iterative refinement with confidence
-            "num_refine_steps": 4,
-            "min_mask_ratio": 0.1,
-            "max_mask_ratio": 1.0,
+        3: {  # Full: iterative refinement with confidence
+            "num_refine_steps": 8,
+            "min_mask_ratio": 0.2,
+            "max_mask_ratio": 0.6,
             "description": "Full iterative refinement with confidence supervision"
         }
     }
@@ -240,9 +226,10 @@ def setup_phase(args):
     # Only override if not explicitly set by user
     if args.num_refine_steps == 1 and args.phase > 1:
         args.num_refine_steps = config["num_refine_steps"]
-    if args.min_mask_ratio == 0.3 and args.phase >= 3:
+    # Apply phase-specific mask ratios if using defaults
+    if args.min_mask_ratio == 0.2 or args.min_mask_ratio == 0.3:
         args.min_mask_ratio = config["min_mask_ratio"]
-    if args.max_mask_ratio == 0.3 and args.phase >= 3:
+    if args.max_mask_ratio == 0.6 or args.max_mask_ratio == 0.3:
         args.max_mask_ratio = config["max_mask_ratio"]
 
     print(f"\n=== Phase {args.phase}: {config['description']} ===")
@@ -619,11 +606,11 @@ def generate_samples(
 
 def train_progressive(args):
     """
-    Progressive curriculum training - single run through all 4 stages.
+    Progressive curriculum training - single run through all 3 stages.
 
     Key features:
     - Fresh data for each stage (no repetition across stages)
-    - Gradual complexity increase: K=1 → K=4, fixed → variable masking
+    - Gradual complexity increase: K=1 → K=4
     - Confidence supervision only in final stage
     - Single checkpoint lineage
     """
@@ -632,14 +619,14 @@ def train_progressive(args):
     # Create checkpoint directory
     Path(args.checkpoint_dir).mkdir(exist_ok=True)
 
-    total_epochs = args.stage_epochs * 4
+    total_epochs = args.stage_epochs * 3
     print(f"\n{'='*60}")
     print(f"PROGRESSIVE CURRICULUM TRAINING")
     print(f"{'='*60}")
     print(f"  Model: {args.model.upper()}")
     print(f"  Dataset: {args.dataset}")
     print(f"  Total samples: {args.num_samples}")
-    print(f"  Samples per stage: ~{args.num_samples // 4}")
+    print(f"  Samples per stage: ~{args.num_samples // 3}")
     print(f"  Epochs per stage: {args.stage_epochs}")
     print(f"  Total epochs: {total_epochs}")
     print(f"  Start stage: {args.start_stage}")
@@ -656,13 +643,12 @@ def train_progressive(args):
         args.seed + 1, vocab_size=args.vocab_size, return_tokenizer=True
     )
 
-    # Split data into 4 parts (one per stage) - no overlap = no repetition
+    # Split data into 3 parts (one per stage) - no overlap = no repetition
     n = len(all_train_tokens)
     stage_data = {
-        1: all_train_tokens[0:n//4],
-        2: all_train_tokens[n//4:n//2],
-        3: all_train_tokens[n//2:3*n//4],
-        4: all_train_tokens[3*n//4:n],
+        1: all_train_tokens[0:n//3],
+        2: all_train_tokens[n//3:2*n//3],
+        3: all_train_tokens[2*n//3:n],
     }
 
     print(f"\nData split across stages:")
@@ -734,7 +720,7 @@ def train_progressive(args):
     # Scheduler spans all epochs
     total_steps_estimate = sum(
         (len(stage_data[s]) // args.batch_size) * args.stage_epochs
-        for s in range(1, 5)
+        for s in range(1, 4)
     ) // args.gradient_accumulation_steps
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, max(1, total_steps_estimate))
 
@@ -774,7 +760,7 @@ def train_progressive(args):
             stage_config = CURRICULUM_STAGES[current_stage]
 
             print(f"\n{'='*60}")
-            print(f"STAGE {current_stage}/4: {stage_config.description}")
+            print(f"STAGE {current_stage}/3: {stage_config.description}")
             print(f"{'='*60}")
             print(f"  Refinement steps (K): {stage_config.num_refine_steps}")
             print(f"  Mask ratio: {stage_config.min_mask_ratio:.0%} - {stage_config.max_mask_ratio:.0%}")
@@ -795,14 +781,14 @@ def train_progressive(args):
                 stride=args.stride,
             )
 
-            # Validation loader (same throughout, uses stage 4 settings for consistency)
+            # Validation loader uses same masking as current stage
             val_loader = create_dataloader(
                 val_tokens,
                 mask_token_id=config.mask_token_id,
                 batch_size=args.batch_size,
                 max_seq_len=args.max_seq_len,
-                min_mask_ratio=0.1,
-                max_mask_ratio=1.0,
+                min_mask_ratio=stage_config.min_mask_ratio,
+                max_mask_ratio=stage_config.max_mask_ratio,
                 shuffle=False,
                 stride=args.stride,
             )
@@ -958,7 +944,7 @@ def train_progressive(args):
         "scheduler_state_dict": scheduler.state_dict(),
         "scaler_state_dict": scaler.state_dict() if scaler else None,
         "epoch": total_epochs - 1,
-        "stage": 4,
+        "stage": 3,
         "config": config,
         "args": args,
         "global_step": global_step,
@@ -981,7 +967,7 @@ def train_progressive(args):
     print(f"  Best val loss: {best_val_loss:.4f}")
     print(f"  Checkpoints saved:")
     print(f"    - {ckpt_prefix}_best.pt")
-    print(f"    - {ckpt_prefix}_stage1.pt ... {ckpt_prefix}_stage4.pt")
+    print(f"    - {ckpt_prefix}_stage1.pt ... {ckpt_prefix}_stage3.pt")
     print(f"    - {ckpt_prefix}_final.pt")
     print(f"{'='*60}\n")
 
