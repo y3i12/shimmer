@@ -597,6 +597,66 @@ def load_shimmer_blend(
     return token_ids, final_vocab_size
 
 
+def get_text_parts(requested_parts:int, dataset_name: str, subset_name:str|None, split: str, key: str, content_key:str = "content", role_key:str = "role"):
+    print(f"Loading {dataset_name}:{split} ({requested_parts} samples)...")
+
+    from datasets import load_dataset
+    dataset_content = load_dataset(dataset_name, subset_name, split=split, streaming=True, token=HF_TOKEN)
+
+    count = 0
+    all_texts = []
+    length = 0
+
+    for row in dataset_content:
+        if count >= requested_parts:
+            break
+        elif count > 0 and count % 5000 == 0:
+            print(f"... {count} loaded ...")
+        
+        # Handle different conversation formats
+        # Check for conversation list in various keys
+        convs = None
+        if key not in row:
+            print(f"'{key}' not found in {row}")
+            exit(1)
+            continue
+
+        val = row[key]
+
+        # Check if it's a list of role/content dicts
+        if isinstance(val, list) and len(val) > 0 and isinstance(val[0], dict):
+            if "role" in val[0] or "from" in val[0]:
+                convs = val
+
+        if convs is None:
+            print(f"no conversation found in {val}")
+            exit(1)
+            continue
+
+        text_parts = []
+        for turn in convs:
+            role = turn.get(role_key, "user").lower()
+            content = turn.get(content_key, "")
+
+            if not content or not content.strip():
+                continue  # Skip empty messages
+
+            if role == "system":
+                text_parts.append(f"System: {content}")
+            elif role == "user" or role == "human":
+                text_parts.append(f"User: {content}")
+            elif role == "assistant" or role == "gpt":
+                text_parts.append(f"Assistant: {content}")
+
+        if text_parts:
+            all_texts.append("\n".join(text_parts))
+            length += len(all_texts[-1])
+            count += 1
+            
+    print(f"... done loading {requested_parts} samples from {dataset_name}:{split} with average length of {int(length/len(all_texts))} chars...")
+
+    return all_texts
+
 def load_agentic_blend(
     num_samples: int,
     split: str = "train",
@@ -633,47 +693,16 @@ def load_agentic_blend(
     all_texts = []
 
     # --- 1. Nemotron-Post-Training-v2 (30%) - Multi-domain ---
-    print(f"Loading Nemotron-v2 ({n_nemotron} samples)...")
     try:
-        nemotron = load_dataset("nvidia/Nemotron-Post-Training-Dataset-v2", split="chat", streaming=True, token=HF_TOKEN)
-        count = 0
-        for example in nemotron:
-            if count >= n_nemotron:
-                break
-            # Handle different conversation formats
-            # Check for conversation list in various keys
-            convs = None
-            for key in ["conversations", "messages", "input"]:
-                if key in example:
-                    val = example[key]
-                    # Check if it's a list of role/content dicts
-                    if isinstance(val, list) and len(val) > 0 and isinstance(val[0], dict):
-                        if "role" in val[0] or "from" in val[0]:
-                            convs = val
-                            break
-
-            if convs is not None:
-                text_parts = []
-                for turn in convs:
-                    role = turn.get("role", turn.get("from", "user"))
-                    content = turn.get("content", turn.get("value", ""))
-                    if not content or not content.strip():
-                        continue  # Skip empty messages
-                    if role in ["system"]:
-                        if content.strip():  # Only add non-empty system
-                            text_parts.append(f"System: {content}")
-                    elif role in ["user", "human"]:
-                        text_parts.append(f"User: {content}")
-                    elif role in ["assistant", "gpt"]:
-                        text_parts.append(f"Assistant: {content}")
-                if text_parts:
-                    all_texts.append("\n".join(text_parts))
-                    count += 1
-            elif "input" in example and "output" in example:
-                text = f"User: {example['input']}\nAssistant: {example['output']}"
-                all_texts.append(text)
-                count += 1
-        print(f"  Loaded {count} Nemotron samples")
+        all_texts.extend(
+            get_text_parts(
+                n_nemotron, 
+                "nvidia/Nemotron-Post-Training-Dataset-v2",
+                None,
+                "chat",
+                "messages"
+            )
+        )
     except Exception as e:
         print(f"  Warning: Could not load Nemotron-v2: {e}")
 
@@ -682,117 +711,68 @@ def load_agentic_blend(
     try:
         mathinstruct = load_dataset("nvidia/OpenMathInstruct-2", split="train", streaming=True, token=HF_TOKEN)
         count = 0
+        length = 0
         for example in mathinstruct:
             if count >= n_math:
                 break
+            elif count > 0 and count % 5000 == 0:
+                print(f"... {count} loaded ...")
+
             problem = example.get("problem", example.get("question", ""))
             solution = example.get("generated_solution", example.get("solution", example.get("answer", "")))
             if problem and solution:
                 text = f"User: {problem}\nAssistant: {solution}"
                 all_texts.append(text)
+                length += len(text)
                 count += 1
-        print(f"  Loaded {count} OpenMathInstruct samples")
+        
+        print(f"... done loading {count} samples from nvidia/OpenMathInstruct-2:train with average length of {int(length/count)} chars...")
+
     except Exception as e:
         print(f"  Warning: Could not load OpenMathInstruct-2: {e}")
 
     # --- 3. OpenHermes-2.5 (15%) - Instruction following ---
-    print(f"Loading OpenHermes-2.5 ({n_hermes} samples)...")
     try:
-        hermes = load_dataset("teknium/OpenHermes-2.5", split="train", streaming=True, token=HF_TOKEN)
-        count = 0
-        for example in hermes:
-            if count >= n_hermes:
-                break
-            # Check multiple possible keys for conversation list
-            conversations = None
-            for key in ["conversations", "messages", "chat", "dialogue"]:
-                if key in example:
-                    val = example[key]
-                    if isinstance(val, list) and len(val) > 0:
-                        conversations = val
-                        break
-
-            if conversations is None:
-                continue
-
-            text_parts = []
-            for turn in conversations:
-                role = turn.get("from", turn.get("role", "user"))
-                content = turn.get("value", turn.get("content", ""))
-                if not content or not content.strip():
-                    continue
-                if role == "system":
-                    if content.strip():
-                        text_parts.append(f"System: {content}")
-                elif role in ["human", "user"]:
-                    text_parts.append(f"User: {content}")
-                elif role in ["gpt", "assistant"]:
-                    text_parts.append(f"Assistant: {content}")
-            if text_parts:
-                all_texts.append("\n".join(text_parts))
-                count += 1
-        print(f"  Loaded {count} OpenHermes samples")
+        all_texts.extend(
+            get_text_parts(
+                n_hermes, 
+                "teknium/OpenHermes-2.5",
+                None,
+                "train",
+                "conversations",
+                role_key="from",
+                content_key="value"
+            )
+        )
     except Exception as e:
         print(f"  Warning: Could not load OpenHermes-2.5: {e}")
 
     # --- 4. Ling-Coder-SFT (15%) - Code ---
     print(f"Loading Ling-Coder-SFT ({n_code} samples)...")
     try:
-        lingcoder = load_dataset("inclusionAI/Ling-Coder-SFT", split="train", streaming=True, token=HF_TOKEN)
-        count = 0
-        for example in lingcoder:
-            if count >= n_code:
-                break
-            # Try different field names
-            if "conversations" in example:
-                convs = example["conversations"]
-                text_parts = []
-                for turn in convs:
-                    role = turn.get("role", turn.get("from", "user"))
-                    content = turn.get("content", turn.get("value", ""))
-                    if role in ["user", "human"]:
-                        text_parts.append(f"User: {content}")
-                    elif role in ["assistant", "gpt"]:
-                        text_parts.append(f"Assistant: {content}")
-                if text_parts:
-                    all_texts.append("\n".join(text_parts))
-                    count += 1
-            elif "instruction" in example:
-                instr = example.get("instruction", "")
-                inp = example.get("input", "")
-                out = example.get("output", "")
-                if instr and out:
-                    query = f"{instr}\n{inp}" if inp else instr
-                    text = f"User: {query}\nAssistant: {out}"
-                    all_texts.append(text)
-                    count += 1
-        print(f"  Loaded {count} Ling-Coder samples")
+        all_texts.extend(
+            get_text_parts(
+                n_code, 
+                "inclusionAI/Ling-Coder-SFT",
+                None,
+                "train",
+                "messages"
+            )
+        )
     except Exception as e:
         print(f"  Warning: Could not load Ling-Coder-SFT: {e}")
 
     # --- 5. smoltalk (12%) - Diverse conversations ---
-    print(f"Loading smoltalk ({n_smol} samples)...")
     try:
-        smoltalk = load_dataset("HuggingFaceTB/smoltalk", "all", split="train", streaming=True, token=HF_TOKEN)
-        count = 0
-        for example in smoltalk:
-            if count >= n_smol:
-                break
-            messages = example.get("messages", [])
-            text_parts = []
-            for msg in messages:
-                role = msg.get("role", "user")
-                content = msg.get("content", "")
-                if role == "system":
-                    text_parts.append(f"System: {content}")
-                elif role == "user":
-                    text_parts.append(f"User: {content}")
-                elif role == "assistant":
-                    text_parts.append(f"Assistant: {content}")
-            if text_parts:
-                all_texts.append("\n".join(text_parts))
-                count += 1
-        print(f"  Loaded {count} smoltalk samples")
+        all_texts.extend(
+            get_text_parts(
+                n_smol, 
+                "HuggingFaceTB/smoltalk",
+                "all",
+                "train",
+                "messages"
+            )
+        )
     except Exception as e:
         print(f"  Warning: Could not load smoltalk: {e}")
 
@@ -801,9 +781,13 @@ def load_agentic_blend(
     try:
         xlam = load_dataset("Salesforce/xlam-function-calling-60k", split="train", streaming=True, token=HF_TOKEN)
         count = 0
+        length = 0
         for example in xlam:
             if count >= n_function:
                 break
+            elif count > 0 and count % 5000 == 0:
+                print(f"... {count} loaded ...")
+
             query = example.get("query", example.get("instruction", ""))
             tools = example.get("tools", "")
             answers = example.get("answers", example.get("output", ""))
@@ -814,8 +798,9 @@ def load_agentic_blend(
                 else:
                     text = f"User: {query}\nAssistant: {answers}"
                 all_texts.append(text)
+                length += len(text)
                 count += 1
-        print(f"  Loaded {count} xlam function-calling samples")
+        print(f"... done loading {count} samples from Salesforce/xlam-function-calling-60k:train with average length of {int(length/count)} chars...")
     except Exception as e:
         print(f"  Warning: Could not load xlam-function-calling: {e}")
 
