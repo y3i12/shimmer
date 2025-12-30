@@ -117,6 +117,9 @@ def parse_args():
                         help="Dataset: tinystories, everyday (2K), bitext (27K), arena (33K), blend (450K instruction mix)")
     parser.add_argument("--num_samples", type=int, default=10000)
     parser.add_argument("--max_seq_len", type=int, default=128)
+    parser.add_argument("--stride", type=int, default=None,
+                        help="Sliding window stride. If set, long docs are split into overlapping windows. "
+                             "E.g., --stride 256 with --max_seq_len 512 = 50%% overlap. Default: None (truncate)")
     parser.add_argument("--vocab_size", type=int, default=0,
                         help="0=GPT-2 (50k), >0=custom SentencePiece tokenizer")
     parser.add_argument("--batch_size", type=int, default=32)
@@ -789,6 +792,7 @@ def train_progressive(args):
                 min_mask_ratio=stage_config.min_mask_ratio,
                 max_mask_ratio=stage_config.max_mask_ratio,
                 shuffle=True,
+                stride=args.stride,
             )
 
             # Validation loader (same throughout, uses stage 4 settings for consistency)
@@ -800,6 +804,7 @@ def train_progressive(args):
                 min_mask_ratio=0.1,
                 max_mask_ratio=1.0,
                 shuffle=False,
+                stride=args.stride,
             )
 
         # Current stage config
@@ -1075,12 +1080,14 @@ def train(args):
             batch_size=args.batch_size,
             max_seq_len=args.max_seq_len,
             shuffle=True,
+            stride=args.stride,
         )
         val_loader = create_gpt_dataloader(
             val_tokens,
             batch_size=args.batch_size,
             max_seq_len=args.max_seq_len,
             shuffle=False,
+            stride=args.stride,
         )
     else:
         train_loader = create_dataloader(
@@ -1091,6 +1098,7 @@ def train(args):
             min_mask_ratio=args.min_mask_ratio,
             max_mask_ratio=args.max_mask_ratio,
             shuffle=True,
+            stride=args.stride,
         )
         val_loader = create_dataloader(
             val_tokens,
@@ -1100,6 +1108,7 @@ def train(args):
             min_mask_ratio=args.min_mask_ratio,
             max_mask_ratio=args.max_mask_ratio,
             shuffle=False,
+            stride=args.stride,
         )
 
     # Optimizer

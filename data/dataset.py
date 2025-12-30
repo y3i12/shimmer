@@ -5,6 +5,10 @@ Key feature: Variable corruption ratio (LLaDA-style)
 - Each sample has random masking ratio t ~ U[0, 1]
 - Loss weighted by 1/t (harder = more credit)
 - Model learns to handle ANY corruption level
+
+Sliding window support:
+- Long documents are split into overlapping windows
+- stride parameter controls overlap (stride < seq_len = overlap)
 """
 import os
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -17,6 +21,66 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 from typing import Optional
 import random
+
+
+def create_sliding_windows(
+    token_ids: list[list[int]],
+    max_seq_len: int,
+    stride: int | None = None,
+    min_window_size: int = 32,
+) -> list[list[int]]:
+    """
+    Split long token sequences into overlapping windows.
+
+    Args:
+        token_ids: List of tokenized documents
+        max_seq_len: Maximum sequence length (window size)
+        stride: Step size between windows. If None, defaults to max_seq_len (no overlap).
+                Use stride < max_seq_len for overlapping windows.
+                E.g., stride=256 with max_seq_len=512 = 50% overlap
+        min_window_size: Minimum tokens for a window to be kept (avoid tiny final chunks)
+
+    Returns:
+        Expanded list of token sequences, each <= max_seq_len
+
+    Example:
+        Doc with 2000 tokens, max_seq_len=512, stride=256:
+        -> Windows at positions: [0:512], [256:768], [512:1024], [768:1280],
+           [1024:1536], [1280:1792], [1536:2000]
+        -> 7 samples instead of 1 (with 1488 tokens discarded)
+    """
+    if stride is None:
+        stride = max_seq_len  # No overlap by default
+
+    stride = min(stride, max_seq_len)  # Stride can't exceed window size
+
+    windowed_sequences = []
+
+    for tokens in token_ids:
+        doc_len = len(tokens)
+
+        if doc_len <= max_seq_len:
+            # Short document - keep as is
+            windowed_sequences.append(tokens)
+        else:
+            # Long document - create sliding windows
+            start = 0
+            while start < doc_len:
+                end = min(start + max_seq_len, doc_len)
+                window = tokens[start:end]
+
+                # Only keep if window is large enough
+                if len(window) >= min_window_size:
+                    windowed_sequences.append(window)
+
+                # Move to next window
+                start += stride
+
+                # Avoid duplicate tiny final windows
+                if end == doc_len:
+                    break
+
+    return windowed_sequences
 
 
 class GPTDataset(Dataset):
@@ -571,7 +635,7 @@ def load_agentic_blend(
     # --- 1. Nemotron-Post-Training-v2 (30%) - Multi-domain ---
     print(f"Loading Nemotron-v2 ({n_nemotron} samples)...")
     try:
-        nemotron = load_dataset("nvidia/Nemotron-Post-Training-Dataset-v2", split="stem", streaming=True, token=HF_TOKEN)
+        nemotron = load_dataset("nvidia/Nemotron-Post-Training-Dataset-v2", split="chat", streaming=True, token=HF_TOKEN)
         count = 0
         for example in nemotron:
             if count >= n_nemotron:
@@ -867,8 +931,20 @@ def create_dataloader(
     max_mask_ratio: float = 1.0,
     shuffle: bool = True,
     num_workers: int = 0,
+    stride: int | None = None,
 ) -> DataLoader:
-    """Create a DataLoader for LIRA/masked LM training."""
+    """Create a DataLoader for LIRA/masked LM training.
+
+    Args:
+        stride: Sliding window stride. If None, no sliding window (truncation).
+                Set stride < max_seq_len for overlapping windows.
+    """
+    # Apply sliding windows if stride is specified
+    if stride is not None:
+        original_count = len(token_ids)
+        token_ids = create_sliding_windows(token_ids, max_seq_len, stride)
+        print(f"  Sliding window: {original_count} docs -> {len(token_ids)} samples (stride={stride})")
+
     dataset = LatentCanvasDataset(
         token_ids=token_ids,
         mask_token_id=mask_token_id,
@@ -891,8 +967,19 @@ def create_gpt_dataloader(
     max_seq_len: int = 128,
     shuffle: bool = True,
     num_workers: int = 0,
+    stride: int | None = None,
 ) -> DataLoader:
-    """Create a DataLoader for GPT/autoregressive training."""
+    """Create a DataLoader for GPT/autoregressive training.
+
+    Args:
+        stride: Sliding window stride. If None, no sliding window (truncation).
+    """
+    # Apply sliding windows if stride is specified
+    if stride is not None:
+        original_count = len(token_ids)
+        token_ids = create_sliding_windows(token_ids, max_seq_len, stride)
+        print(f"  Sliding window: {original_count} docs -> {len(token_ids)} samples (stride={stride})")
+
     dataset = GPTDataset(
         token_ids=token_ids,
         max_seq_len=max_seq_len,
