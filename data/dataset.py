@@ -571,20 +571,33 @@ def load_agentic_blend(
     # --- 1. Nemotron-Post-Training-v2 (30%) - Multi-domain ---
     print(f"Loading Nemotron-v2 ({n_nemotron} samples)...")
     try:
-        nemotron = load_dataset("nvidia/Nemotron-Post-Training-Dataset-v2", split="chat", streaming=True, token=HF_TOKEN)
+        nemotron = load_dataset("nvidia/Nemotron-Post-Training-Dataset-v2", split="stem", streaming=True, token=HF_TOKEN)
         count = 0
         for example in nemotron:
             if count >= n_nemotron:
                 break
             # Handle different conversation formats
-            if "conversations" in example:
-                convs = example["conversations"]
+            # Check for conversation list in various keys
+            convs = None
+            for key in ["conversations", "messages", "input"]:
+                if key in example:
+                    val = example[key]
+                    # Check if it's a list of role/content dicts
+                    if isinstance(val, list) and len(val) > 0 and isinstance(val[0], dict):
+                        if "role" in val[0] or "from" in val[0]:
+                            convs = val
+                            break
+
+            if convs is not None:
                 text_parts = []
                 for turn in convs:
                     role = turn.get("role", turn.get("from", "user"))
                     content = turn.get("content", turn.get("value", ""))
+                    if not content or not content.strip():
+                        continue  # Skip empty messages
                     if role in ["system"]:
-                        text_parts.append(f"System: {content}")
+                        if content.strip():  # Only add non-empty system
+                            text_parts.append(f"System: {content}")
                     elif role in ["user", "human"]:
                         text_parts.append(f"User: {content}")
                     elif role in ["assistant", "gpt"]:
@@ -626,16 +639,30 @@ def load_agentic_blend(
         for example in hermes:
             if count >= n_hermes:
                 break
-            conversations = example.get("conversations", [])
+            # Check multiple possible keys for conversation list
+            conversations = None
+            for key in ["conversations", "messages", "chat", "dialogue"]:
+                if key in example:
+                    val = example[key]
+                    if isinstance(val, list) and len(val) > 0:
+                        conversations = val
+                        break
+
+            if conversations is None:
+                continue
+
             text_parts = []
             for turn in conversations:
-                role = turn.get("from", "user")
-                content = turn.get("value", "")
+                role = turn.get("from", turn.get("role", "user"))
+                content = turn.get("value", turn.get("content", ""))
+                if not content or not content.strip():
+                    continue
                 if role == "system":
-                    text_parts.append(f"System: {content}")
-                elif role == "human":
+                    if content.strip():
+                        text_parts.append(f"System: {content}")
+                elif role in ["human", "user"]:
                     text_parts.append(f"User: {content}")
-                elif role == "gpt":
+                elif role in ["gpt", "assistant"]:
                     text_parts.append(f"Assistant: {content}")
             if text_parts:
                 all_texts.append("\n".join(text_parts))

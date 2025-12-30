@@ -124,7 +124,8 @@ class LatentCanvasModel(nn.Module):
         Masked positions get the learnable mask embedding.
         """
         # Get base embeddings
-        z = self.embed_tokens(input_ids)
+        # Clone for CUDA graph compatibility (reduce-overhead mode)
+        z = self.embed_tokens(input_ids).clone()
 
         # Replace masked positions with learnable mask embedding
         # Use torch.where for torch.compile() compatibility (avoids dynamic indexing)
