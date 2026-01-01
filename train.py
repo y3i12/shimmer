@@ -176,9 +176,9 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--compile", action="store_true",
                         help="Use torch.compile() for faster training (PyTorch 2.0+)")
-    parser.add_argument("--compile_mode", type=str, default="reduce-overhead",
+    parser.add_argument("--compile_mode", type=str, default="default",
                         choices=["default", "reduce-overhead", "max-autotune"],
-                        help="torch.compile mode: default, reduce-overhead (faster compile), max-autotune (slower compile, faster run)")
+                        help="torch.compile mode: default (stable), reduce-overhead (CUDA graphs - may conflict with embeddings), max-autotune (slower compile, faster run)")
 
     # Checkpoints
     parser.add_argument("--checkpoint_dir", type=str, default="checkpoints")
@@ -381,10 +381,16 @@ def compute_loss(
 
     # Phase 4: Add confidence supervision
     if phase == 4:
-        # Target: high confidence where prediction matches label
+        # Compute targets for confidence supervision
         with torch.no_grad():
+            # Binary target (for models that need it)
             predictions = logits.argmax(dim=-1)
             correct = (predictions == labels).float()
+
+            # Soft target: probability assigned to correct token
+            # This gives continuous gradient signal instead of binary
+            probs = F.softmax(logits, dim=-1)
+            soft_target = probs.gather(-1, labels.unsqueeze(-1)).squeeze(-1)
 
         if model_type == "hybrid" and conf_logits is not None:
             # Hybrid: Use logits version for autocast safety + coherence loss
@@ -402,11 +408,11 @@ def compute_loss(
                 conf_loss = conf_loss + 0.1 * coherence_loss
                 result["coherence_loss"] = coherence_loss.detach()
         elif model_type == "lira" and conf_logits is not None:
-            # LIRA: Use logits version for autocast safety
-            conf_loss = F.binary_cross_entropy_with_logits(
-                conf_logits[mask_positions],
-                correct[mask_positions],
-            )
+            # LIRA: MSE with soft targets
+            # Confidence should match probability of correct token
+            # This gives continuous gradient (not binary) - breaks the plateau!
+            pred_confidence = torch.sigmoid(conf_logits[mask_positions])
+            conf_loss = F.mse_loss(pred_confidence, soft_target[mask_positions])
         elif model_type == "dialectic" and "layer_conf_logits" in output:
             # Dialectic: Supervise PER-LAYER confidence (the actual backtrack signal!)
             # Each layer should be confident when its contribution leads to correct prediction
