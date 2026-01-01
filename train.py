@@ -120,6 +120,9 @@ def parse_args():
     parser.add_argument("--hidden_size", type=int, default=256)
     parser.add_argument("--num_heads", type=int, default=8)
     parser.add_argument("--num_layers", type=int, default=2)
+    parser.add_argument("--confidence_head_type", type=str, default="mlp",
+                        choices=["linear", "mlp", "entropy"],
+                        help="Confidence head: linear (~1K), mlp (~660K), entropy (~4.2M, uses logits)")
 
     # LIRA-specific
     parser.add_argument("--num_refine_steps", type=int, default=1,
@@ -269,6 +272,7 @@ def create_model(args, vocab_size: int, mask_token_id: int):
             num_layers=args.num_layers,
             max_seq_len=args.max_seq_len,
             num_refine_steps=args.num_refine_steps,
+            confidence_head_type=args.confidence_head_type,
             mask_token_id=mask_token_id,
             hybrid_mode=args.hybrid_mode,
             mamba_ratio=args.mamba_ratio,

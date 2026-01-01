@@ -226,16 +226,25 @@ def main():
                         help="Refinement steps per token (Dialectic only)")
     parser.add_argument("--device", type=str, default="cuda",
                         help="Device to use (cuda/cpu)")
+    parser.add_argument("--gpu", type=int, default=0,
+                        help="GPU index to use (0, 1, etc.). Use -1 for CPU.")
     parser.add_argument("--verbose", action="store_true",
                         help="Print detailed generation info")
-    parser.add_argument("--tokenizer", type=str, default="tokenizers/shimmer_blend_10000.model",
+    parser.add_argument("--tokenizer_path", type=str, default="tokenizers/shimmer_blend_10000.model",
                         help="Directory containing custom tokenizers")
 
     args = parser.parse_args()
 
-    if args.device == "cuda" and not torch.cuda.is_available():
-        print("CUDA not available, falling back to CPU")
-        args.device = "cpu"
+    # Setup device
+    if args.device == "cpu" or args.gpu == -1 or not torch.cuda.is_available():
+        device = torch.device("cpu")
+        print(f"\nUsing CPU")
+    else:
+        device = torch.device(f"cuda:{args.gpu}")
+        torch.cuda.set_device(args.gpu)
+        gpu_name = torch.cuda.get_device_name(args.gpu)
+        gpu_mem = torch.cuda.get_device_properties(args.gpu).total_memory / 1024**3
+        print(f"\nUsing GPU {args.gpu}: {gpu_name} ({gpu_mem:.1f}GB)")
 
     # Load checkpoint
     print(f"\nLoading checkpoint: {args.checkpoint}")
@@ -275,7 +284,7 @@ def main():
               f"confidence_threshold={config.confidence_threshold}")
 
     # Load tokenizer
-    tokenizer, tokenizer_type = load_tokenizer(config.vocab_size, args.tokenizer)
+    tokenizer, tokenizer_type = load_tokenizer(config.vocab_size, args.tokenizer_path)
 
     # Create model and load weights
     model = create_model(config, model_type)

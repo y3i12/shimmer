@@ -1366,6 +1366,8 @@ def main():
                         help=f"Evaluation preset (default: {DEFAULT_PRESET})")
     parser.add_argument("--device", type=str, default="cuda",
                         help="Device (cuda/cpu)")
+    parser.add_argument("--gpu", type=int, default=0,
+                        help="GPU index to use (0, 1, etc.). Use -1 for CPU.")
     parser.add_argument("--tokenizer_dir", type=str, default="tokenizers",
                         help="Tokenizer directory")
     parser.add_argument("--tokenizer_path", type=str, default=None,
@@ -1381,9 +1383,16 @@ def main():
 
     args = parser.parse_args()
 
-    if args.device == "cuda" and not torch.cuda.is_available():
-        print("CUDA not available, using CPU")
-        args.device = "cpu"
+    # Setup device
+    if args.device == "cpu" or args.gpu == -1 or not torch.cuda.is_available():
+        device = torch.device("cpu")
+        print(f"\nUsing CPU")
+    else:
+        device = torch.device(f"cuda:{args.gpu}")
+        torch.cuda.set_device(args.gpu)
+        gpu_name = torch.cuda.get_device_name(args.gpu)
+        gpu_mem = torch.cuda.get_device_properties(args.gpu).total_memory / 1024**3
+        print(f"\nUsing GPU {args.gpu}: {gpu_name} ({gpu_mem:.1f}GB)")
 
     run_evaluation(args)
 

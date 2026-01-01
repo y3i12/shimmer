@@ -8,14 +8,98 @@ Core idea:
 - Final decode to tokens
 """
 
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, Literal
 
 from .layers import RMSNorm, RefineBlock
 from .mamba import HybridRefineBlock
+
+
+# =============================================================================
+# Confidence Head Variants
+# =============================================================================
+
+class MLPConfidenceHead(nn.Module):
+    """
+    MLP-based confidence head.
+
+    Projects hidden state through an MLP to predict confidence.
+    """
+    def __init__(self, hidden_size: int):
+        super().__init__()
+        self.mlp = nn.Sequential(
+            nn.Linear(hidden_size, hidden_size // 2),
+            nn.GELU(),
+            nn.Linear(hidden_size // 2, hidden_size // 4),
+            nn.GELU(),
+            nn.Linear(hidden_size // 4, 1),
+        )
+
+    def forward(self, z: torch.Tensor, logits: torch.Tensor = None) -> torch.Tensor:
+        """
+        Args:
+            z: Hidden states [B, L, D]
+            logits: Unused, for API compatibility
+        Returns:
+            Confidence logits [B, L, 1]
+        """
+        return self.mlp(z)
+
+
+class EntropyConfidenceHead(nn.Module):
+    """
+    Entropy-aware confidence head.
+
+    Predicts refinement confidence from hidden state AND logit entropy.
+
+    The intuition: a token is "done" when:
+    1. The hidden state is in a stable region (learned)
+    2. The output distribution is peaked (low entropy)
+    """
+    def __init__(self, hidden_size: int):
+        super().__init__()
+        # Hidden state pathway
+        self.state_proj = nn.Sequential(
+            nn.Linear(hidden_size, hidden_size * 2),
+            nn.GELU(),
+            nn.LayerNorm(hidden_size * 2),
+        )
+        # Combine state features with entropy + max_prob signals
+        # Input: state_features (D*2) + entropy (1) + max_prob (1)
+        self.combine = nn.Sequential(
+            nn.Linear(hidden_size * 2 + 2, hidden_size),
+            nn.GELU(),
+            nn.Linear(hidden_size, 1),
+        )
+
+    def forward(self, z: torch.Tensor, logits: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            z: Hidden states [B, L, D]
+            logits: Token logits [B, L, V]
+        Returns:
+            Confidence logits [B, L, 1]
+        """
+        # Project hidden state
+        state_features = self.state_proj(z)  # [B, L, D*2]
+
+        # Compute entropy of output distribution (low = confident)
+        probs = F.softmax(logits, dim=-1)
+        entropy = -(probs * torch.log(probs + 1e-8)).sum(dim=-1, keepdim=True)
+        # Normalize entropy to ~[0,1] range (log(vocab_size) is max entropy)
+        max_entropy = math.log(logits.size(-1))
+        entropy_normalized = entropy / max_entropy  # [B, L, 1]
+
+        # Also include max probability (how confident in top choice)
+        max_prob = probs.max(dim=-1, keepdim=True).values  # [B, L, 1]
+
+        # Combine all signals
+        combined = torch.cat([state_features, entropy_normalized, max_prob], dim=-1)
+        return self.combine(combined)  # [B, L, 1]
 
 
 @dataclass
@@ -31,6 +115,9 @@ class LatentCanvasConfig:
 
     # Refinement settings
     num_refine_steps: int = 1  # K: how many times to apply RefineBlock
+
+    # Confidence head settings
+    confidence_head_type: str = "mlp"  # "linear", "mlp", or "entropy"
 
     # Hybrid Mamba settings
     hybrid_mode: str = None  # None, "attention", "mamba", "parallel", "interleaved", "adaptive"
@@ -101,7 +188,16 @@ class LatentCanvasModel(nn.Module):
 
         # Output heads
         self.token_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
-        self.confidence_head = nn.Linear(config.hidden_size, 1, bias=False)
+
+        # Confidence head (based on config)
+        if config.confidence_head_type == "linear":
+            self.confidence_head = nn.Linear(config.hidden_size, 1, bias=False)
+        elif config.confidence_head_type == "mlp":
+            self.confidence_head = MLPConfidenceHead(config.hidden_size)
+        elif config.confidence_head_type == "entropy":
+            self.confidence_head = EntropyConfidenceHead(config.hidden_size)
+        else:
+            raise ValueError(f"Unknown confidence_head_type: {config.confidence_head_type}")
 
         # Tie embeddings with output (optional but common)
         # self.token_head.weight = self.embed_tokens.weight[:-1]  # Exclude mask token
@@ -167,14 +263,25 @@ class LatentCanvasModel(nn.Module):
             return z, intermediates
         return z
 
-    def get_confidence(self, z: torch.Tensor) -> torch.Tensor:
+    def get_confidence(self, z: torch.Tensor, logits: torch.Tensor = None) -> torch.Tensor:
         """
         Measure confidence at each position.
+
+        Args:
+            z: Latent canvas [B, L, D]
+            logits: Token logits [B, L, V] (required for entropy head)
 
         Returns:
             Confidence scores [B, L] in range [0, 1]
         """
-        return torch.sigmoid(self.confidence_head(z)).squeeze(-1)
+        if self.config.confidence_head_type == "entropy":
+            if logits is None:
+                # Need to decode first
+                logits = self.decode(z)
+            conf_logits = self.confidence_head(z, logits)
+        else:
+            conf_logits = self.confidence_head(z, logits)  # logits ignored for mlp/linear
+        return torch.sigmoid(conf_logits).squeeze(-1)
 
     def decode(self, z: torch.Tensor) -> torch.Tensor:
         """
@@ -222,7 +329,8 @@ class LatentCanvasModel(nn.Module):
         result = {"logits": logits, "latent": z}
 
         if return_confidence:
-            conf_logits = self.confidence_head(z).squeeze(-1)
+            # Pass logits to confidence head (used by entropy head, ignored by others)
+            conf_logits = self.confidence_head(z, logits).squeeze(-1)
             result["confidence"] = torch.sigmoid(conf_logits)
             result["conf_logits"] = conf_logits  # Raw logits for training
 
