@@ -48,13 +48,16 @@ from data import load_dataset_by_name, create_dataloader, create_gpt_dataloader,
 class CurriculumStage:
     """Configuration for a curriculum stage in progressive training."""
     stage: int
-    num_refine_steps: int
+    num_refine_steps: int  # Default K if not using random_k
     min_mask_ratio: float
     max_mask_ratio: float
     use_confidence_loss: bool
     data_start: float  # 0.0 - 1.0 (fraction of dataset)
     data_end: float
     description: str
+    # Stage-aware K ranges for random_k mode
+    k_min: int = 1
+    k_max: int = 8
 
 
 # Progressive curriculum: 3 stages with fresh data each
@@ -67,7 +70,9 @@ CURRICULUM_STAGES = {
         use_confidence_loss=True,
         data_start=0.0,
         data_end=0.333,
-        description="K=2, variable 15-45% masking"
+        description="K=1-2, variable 15-45% masking",
+        k_min=1,
+        k_max=2,
     ),
     2: CurriculumStage(
         stage=2,
@@ -77,7 +82,9 @@ CURRICULUM_STAGES = {
         use_confidence_loss=True,
         data_start=0.333,
         data_end=0.666,
-        description="K=4, variable 20-60% masking"
+        description="K=1-4, variable 20-60% masking",
+        k_min=1,
+        k_max=4,
     ),
     3: CurriculumStage(
         stage=3,
@@ -87,7 +94,9 @@ CURRICULUM_STAGES = {
         use_confidence_loss=True,
         data_start=0.666,
         data_end=1.0,
-        description="K=8, variable 30-70% masking"
+        description="K=1-7, variable 30-70% masking",
+        k_min=1,
+        k_max=7,
     ),
 }
 
@@ -130,6 +139,14 @@ def parse_args():
     # LIRA-specific
     parser.add_argument("--num_refine_steps", type=int, default=1,
                         help="LIRA refinement iterations (Phase 2+ uses >1)")
+    parser.add_argument("--use_progress_embedding", action="store_true",
+                        help="Inject iteration progress signal (0→1) into RefineBlock")
+    parser.add_argument("--random_k", action="store_true",
+                        help="Sample random K per batch (requires --use_progress_embedding for best results)")
+    parser.add_argument("--k_min", type=int, default=1,
+                        help="Minimum K for random sampling (default: 1)")
+    parser.add_argument("--k_max", type=int, default=16,
+                        help="Maximum K for random sampling (default: 16)")
 
     # Hybrid Mamba settings
     parser.add_argument("--hybrid_mode", type=str, default=None,
@@ -277,6 +294,7 @@ def create_model(args, vocab_size: int, mask_token_id: int):
             num_refine_steps=args.num_refine_steps,
             token_head_type=args.token_head_type,
             confidence_head_type=args.confidence_head_type,
+            use_progress_embedding=args.use_progress_embedding,
             mask_token_id=mask_token_id,
             hybrid_mode=args.hybrid_mode,
             mamba_ratio=args.mamba_ratio,
@@ -323,6 +341,9 @@ def compute_loss(
     device: torch.device,
     model_type: str = "lira",
     num_refine_steps: int = 1,
+    random_k: bool = False,
+    k_min: int = 1,
+    k_max: int = 16,
 ) -> dict[str, torch.Tensor]:
     """
     Compute loss based on phase and model type.
@@ -333,6 +354,11 @@ def compute_loss(
     """
     input_ids = batch["input_ids"].to(device)
     labels = batch["labels"].to(device)
+
+    # Sample random K if enabled
+    if random_k:
+        import random
+        num_refine_steps = random.randint(k_min, k_max)
 
     # GPT uses different loss computation
     if model_type == "gpt":
@@ -825,11 +851,16 @@ def train_progressive(args):
             if args.compile and hasattr(torch.compiler, 'cudagraph_mark_step_begin'):
                 torch.compiler.cudagraph_mark_step_begin()
 
+            # Use stage-specific K ranges if random_k enabled
+            stage_k_min = stage_config.k_min if args.random_k else args.k_min
+            stage_k_max = stage_config.k_max if args.random_k else args.k_max
+
             if args.fp16:
                 with autocast('cuda'):
                     result = compute_loss(
                         model, batch, phase_for_loss, device,
-                        args.model, stage_config.num_refine_steps
+                        args.model, stage_config.num_refine_steps,
+                        random_k=args.random_k, k_min=stage_k_min, k_max=stage_k_max
                     )
                     scaled_loss = result["loss"] / accum_steps
                 scaler.scale(scaled_loss).backward()
@@ -843,7 +874,8 @@ def train_progressive(args):
             else:
                 result = compute_loss(
                     model, batch, phase_for_loss, device,
-                    args.model, stage_config.num_refine_steps
+                    args.model, stage_config.num_refine_steps,
+                    random_k=args.random_k, k_min=stage_k_min, k_max=stage_k_max
                 )
                 scaled_loss = result["loss"] / accum_steps
                 scaled_loss.backward()
@@ -1224,7 +1256,8 @@ def train(args):
                 with autocast('cuda'):
                     result = compute_loss(
                         model, batch, args.phase, device,
-                        args.model, args.num_refine_steps
+                        args.model, args.num_refine_steps,
+                        random_k=args.random_k, k_min=args.k_min, k_max=args.k_max
                     )
                     # Scale loss for accumulation
                     scaled_loss = result["loss"] / accum_steps
@@ -1239,7 +1272,8 @@ def train(args):
             else:
                 result = compute_loss(
                     model, batch, args.phase, device,
-                    args.model, args.num_refine_steps
+                    args.model, args.num_refine_steps,
+                    random_k=args.random_k, k_min=args.k_min, k_max=args.k_max
                 )
                 # Scale loss for accumulation
                 scaled_loss = result["loss"] / accum_steps

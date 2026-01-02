@@ -145,6 +145,9 @@ class LatentCanvasConfig:
     token_head_type: str = "linear"  # "linear" or "mlp"
     confidence_head_type: str = "mlp"  # "linear", "mlp", or "entropy"
 
+    # Progress embedding (iteration awareness)
+    use_progress_embedding: bool = False  # Inject iteration progress signal
+
     # Hybrid Mamba settings
     hybrid_mode: str = None  # None, "attention", "mamba", "parallel", "interleaved", "adaptive"
     mamba_ratio: float = 0.75  # For interleaved/adaptive: ratio of Mamba layers
@@ -208,7 +211,8 @@ class LatentCanvasModel(nn.Module):
                 config.hidden_size,
                 config.num_heads,
                 config.num_layers,
-                config.max_seq_len
+                config.max_seq_len,
+                use_progress_embedding=config.use_progress_embedding,
             )
             self.use_hybrid = False
 
@@ -266,7 +270,8 @@ class LatentCanvasModel(nn.Module):
         self,
         z: torch.Tensor,
         num_steps: Optional[int] = None,
-        return_intermediates: bool = False
+        return_intermediates: bool = False,
+        training: bool = None,
     ) -> torch.Tensor | tuple[torch.Tensor, list[torch.Tensor]]:
         """
         Apply refinement steps to latent canvas.
@@ -275,19 +280,24 @@ class LatentCanvasModel(nn.Module):
             z: Latent canvas [B, L, D]
             num_steps: Override config.num_refine_steps
             return_intermediates: Return all intermediate states
+            training: Override self.training for progress noise
 
         Returns:
             Refined latent canvas (and optionally intermediates)
         """
         num_steps = num_steps or self.config.num_refine_steps
+        is_training = training if training is not None else self.training
         intermediates = []
 
         for step in range(num_steps):
+            # Compute normalized progress (0.0 → 1.0)
+            progress = step / max(num_steps - 1, 1) if num_steps > 1 else 1.0
+
             # Pass iteration info for adaptive hybrid mode
             if self.use_hybrid:
                 z = self.refine_block(z, iteration=step, total_iterations=num_steps)
             else:
-                z = self.refine_block(z)
+                z = self.refine_block(z, progress=progress, training=is_training)
             if return_intermediates:
                 intermediates.append(z.clone())
 

@@ -133,13 +133,64 @@ class TransformerBlock(nn.Module):
         return x
 
 
+class ProgressEmbedding(nn.Module):
+    """
+    Embeds iteration progress (0.0 → 1.0) into a hidden dimension vector.
+
+    Uses sinusoidal encoding (like positional encoding) for smooth interpolation,
+    plus a learned projection to match hidden size.
+
+    During training, optional noise is added for regularization.
+    """
+
+    def __init__(self, hidden_size: int, max_freqs: int = 16, noise_std: float = 0.05):
+        super().__init__()
+        self.max_freqs = max_freqs
+        self.noise_std = noise_std
+        # Sinusoidal encoding gives us 2*max_freqs features
+        # Project to hidden_size
+        self.proj = nn.Linear(max_freqs * 2, hidden_size, bias=False)
+
+    def forward(self, progress: float, device: torch.device, training: bool = True) -> torch.Tensor:
+        """
+        Args:
+            progress: Float in [0, 1] indicating refinement progress
+            device: Device to create tensor on
+            training: If True, add noise for regularization
+
+        Returns:
+            Progress embedding [1, 1, D] broadcastable to [B, L, D]
+        """
+        # Add noise during training (clamped to [0, 1])
+        if training and self.noise_std > 0:
+            noise = torch.randn(1, device=device).item() * self.noise_std
+            progress = max(0.0, min(1.0, progress + noise))
+
+        # Create sinusoidal features at different frequencies
+        freqs = torch.arange(self.max_freqs, device=device).float()
+        # Scale progress to [0, pi] for half-period coverage
+        angles = progress * math.pi * (2 ** freqs) / (2 ** self.max_freqs)
+
+        # Sin and cos features
+        sin_feats = torch.sin(angles)
+        cos_feats = torch.cos(angles)
+        features = torch.cat([sin_feats, cos_feats], dim=-1)  # [2*max_freqs]
+
+        # Project to hidden size
+        embedding = self.proj(features)  # [D]
+        return embedding.view(1, 1, -1)  # [1, 1, D] for broadcasting
+
+
 class RefineBlock(nn.Module):
     """
     A refinement block that processes the latent canvas.
     This is the core unit that gets applied repeatedly (TRM-style).
+
+    Optionally accepts progress signal (0.0 → 1.0) indicating refinement progress.
     """
 
-    def __init__(self, hidden_size: int, num_heads: int, num_layers: int = 2, max_seq_len: int = 2048):
+    def __init__(self, hidden_size: int, num_heads: int, num_layers: int = 2,
+                 max_seq_len: int = 2048, use_progress_embedding: bool = False):
         super().__init__()
         self.layers = nn.ModuleList([
             TransformerBlock(hidden_size, num_heads, max_seq_len)
@@ -147,17 +198,31 @@ class RefineBlock(nn.Module):
         ])
         self.norm = RMSNorm(hidden_size)
 
-    def forward(self, z: torch.Tensor, mask: torch.Tensor | None = None) -> torch.Tensor:
+        # Optional progress embedding
+        self.use_progress_embedding = use_progress_embedding
+        if use_progress_embedding:
+            self.progress_embed = ProgressEmbedding(hidden_size)
+
+    def forward(self, z: torch.Tensor, mask: torch.Tensor | None = None,
+                progress: float | None = None, training: bool = True) -> torch.Tensor:
         """
         Refine the latent canvas.
 
         Args:
             z: Latent canvas [B, L, D]
             mask: Optional attention mask
+            progress: Optional refinement progress in [0, 1]
+                      0.0 = just starting, 1.0 = final iteration
+            training: If True, add noise to progress for regularization
 
         Returns:
             Refined latent canvas [B, L, D]
         """
+        # Inject progress signal if available
+        if self.use_progress_embedding and progress is not None:
+            progress_emb = self.progress_embed(progress, z.device, training=training)
+            z = z + progress_emb  # Broadcast [1,1,D] to [B,L,D]
+
         for layer in self.layers:
             z = layer(z, mask)
         return self.norm(z)
