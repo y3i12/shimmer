@@ -84,7 +84,7 @@ CURRICULUM_STAGES = {
         data_end=0.666,
         description="K=1-4, variable 20-60% masking",
         k_min=1,
-        k_max=4,
+        k_max=3,
     ),
     3: CurriculumStage(
         stage=3,
@@ -96,7 +96,7 @@ CURRICULUM_STAGES = {
         data_end=1.0,
         description="K=1-7, variable 30-70% masking",
         k_min=1,
-        k_max=7,
+        k_max=4,
     ),
 }
 
@@ -862,7 +862,7 @@ def train_progressive(args):
                         args.model, stage_config.num_refine_steps,
                         random_k=args.random_k, k_min=stage_k_min, k_max=stage_k_max
                     )
-                    scaled_loss = result["loss"] / accum_steps
+                    scaled_loss = result["loss"] / effective_batch_size
                 scaler.scale(scaled_loss).backward()
 
                 if not is_accumulating:
@@ -877,7 +877,7 @@ def train_progressive(args):
                     args.model, stage_config.num_refine_steps,
                     random_k=args.random_k, k_min=stage_k_min, k_max=stage_k_max
                 )
-                scaled_loss = result["loss"] / accum_steps
+                scaled_loss = result["loss"] / effective_batch_size
                 scaled_loss.backward()
 
                 if not is_accumulating:
@@ -897,7 +897,7 @@ def train_progressive(args):
             # Periodic logging
             if (now - last_log).total_seconds() > 10:
                 last_log = now
-                avg_loss = (epoch_loss / epoch_batches if epoch_batches > 0 else 0) / args.batch_size
+                avg_loss = (epoch_loss / epoch_batches if epoch_batches > 0 else 0) / effective_batch_size
                 elapsed = (now - start_time).total_seconds()
 
                 log_parts = [
@@ -923,7 +923,7 @@ def train_progressive(args):
                 last_val = datetime.datetime.now()
 
                 val_loss = val_metrics['val_loss'] / args.batch_size
-                train_loss = (epoch_loss / epoch_batches if epoch_batches > 0 else 0) / args.batch_size
+                train_loss = (epoch_loss / epoch_batches if epoch_batches > 0 else 0) / effective_batch_size
 
                 print(f"\n  Validation: TrainLoss {train_loss:.4f} | ValLoss {val_loss:.4f} | ValAcc {val_metrics['val_acc']:.2f}%\n")
 
@@ -953,7 +953,7 @@ def train_progressive(args):
             args.model, stage_config.num_refine_steps
         )
 
-        avg_epoch_loss = epoch_loss / epoch_batches if epoch_batches > 0 else 0
+        avg_epoch_loss = (epoch_loss // epoch_batches) / effective_batch_size
         val_loss = val_metrics['val_loss'] / args.batch_size
 
         print(f"\n[Stage {current_stage}] Epoch {epoch+1}/{total_epochs} completed in {epoch_time:.1f}s")
@@ -1276,7 +1276,7 @@ def train(args):
                     random_k=args.random_k, k_min=args.k_min, k_max=args.k_max
                 )
                 # Scale loss for accumulation
-                scaled_loss = result["loss"] / accum_steps
+                scaled_loss = result["loss"] / effective_batch_size
                 scaled_loss.backward()
 
                 if not is_accumulating:
@@ -1287,7 +1287,7 @@ def train(args):
             # Step scheduler per optimizer step (not per batch)
             if not is_accumulating:
                 scheduler.step()
-            loss_item = result["loss"].item()
+            loss_item = result["loss"].item() / effective_batch_size
             epoch_loss += loss_item
             global_step += args.batch_size
             doc += args.batch_size
