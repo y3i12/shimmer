@@ -585,7 +585,7 @@ def generate_samples(
             canvas, history = model.generate_topk(
                 prompt_tensor,
                 gen_length=gen_length,
-                num_steps=max(15, gen_length // 3),
+                num_steps=max(15, gen_length * 2),
                 temperature=0.8,
             )
             text = tokenizer.decode(canvas[0].cpu().tolist())
@@ -594,7 +594,7 @@ def generate_samples(
             canvas, history = model.generate_topk(
                 prompt_tensor,
                 gen_length=gen_length,
-                num_steps=max(15, gen_length // 3),
+                num_steps=max(15, gen_length * 2),
                 temperature=0.8,
             )
             text = tokenizer.decode(canvas[0].cpu().tolist())
@@ -861,7 +861,7 @@ def train_progressive(args):
             # Periodic logging
             if (now - last_log).total_seconds() > 10:
                 last_log = now
-                avg_loss = epoch_loss / epoch_batches if epoch_batches > 0 else 0
+                avg_loss = (epoch_loss / epoch_batches if epoch_batches > 0 else 0) / args.batch_size
                 elapsed = (now - start_time).total_seconds()
 
                 log_parts = [
@@ -887,7 +887,7 @@ def train_progressive(args):
                 last_val = datetime.datetime.now()
 
                 val_loss = val_metrics['val_loss'] / args.batch_size
-                train_loss = epoch_loss / epoch_batches if epoch_batches > 0 else 0
+                train_loss = (epoch_loss / epoch_batches if epoch_batches > 0 else 0) / args.batch_size
 
                 print(f"\n  Validation: TrainLoss {train_loss:.4f} | ValLoss {val_loss:.4f} | ValAcc {val_metrics['val_acc']:.2f}%\n")
 
