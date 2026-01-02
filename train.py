@@ -62,32 +62,32 @@ CURRICULUM_STAGES = {
     1: CurriculumStage(
         stage=1,
         num_refine_steps=2,
-        min_mask_ratio=0.1,
-        max_mask_ratio=0.3,
+        min_mask_ratio=0.15,
+        max_mask_ratio=0.45,
         use_confidence_loss=True,
         data_start=0.0,
         data_end=0.333,
-        description="Double pass, variable 10-30% masking, with confidence (baseline)"
+        description="K=2, variable 15-45% masking"
     ),
     2: CurriculumStage(
         stage=2,
         num_refine_steps=4,
-        min_mask_ratio=0.15,
-        max_mask_ratio=0.45,
+        min_mask_ratio=0.20,
+        max_mask_ratio=0.60,
         use_confidence_loss=True,
         data_start=0.333,
         data_end=0.666,
-        description="Multiple passes (K=4), variable 20-60% masking"
+        description="K=4, variable 20-60% masking"
     ),
     3: CurriculumStage(
         stage=3,
         num_refine_steps=8,
-        min_mask_ratio=0.2,
-        max_mask_ratio=0.6,
+        min_mask_ratio=0.30,
+        max_mask_ratio=0.70,
         use_confidence_loss=True,
         data_start=0.666,
         data_end=1.0,
-        description="Full: iterative refinement with confidence supervision"
+        description="K=8, variable 30-70% masking"
     ),
 }
 
@@ -120,6 +120,9 @@ def parse_args():
     parser.add_argument("--hidden_size", type=int, default=256)
     parser.add_argument("--num_heads", type=int, default=8)
     parser.add_argument("--num_layers", type=int, default=2)
+    parser.add_argument("--token_head_type", type=str, default="linear",
+                        choices=["linear", "mlp"],
+                        help="Token head: linear (D×V), mlp (D×D + D×V, adds non-linear feature mixing)")
     parser.add_argument("--confidence_head_type", type=str, default="mlp",
                         choices=["linear", "mlp", "entropy"],
                         help="Confidence head: linear (~1K), mlp (~660K), entropy (~4.2M, uses logits)")
@@ -272,6 +275,7 @@ def create_model(args, vocab_size: int, mask_token_id: int):
             num_layers=args.num_layers,
             max_seq_len=args.max_seq_len,
             num_refine_steps=args.num_refine_steps,
+            token_head_type=args.token_head_type,
             confidence_head_type=args.confidence_head_type,
             mask_token_id=mask_token_id,
             hybrid_mode=args.hybrid_mode,
@@ -344,12 +348,12 @@ def compute_loss(
 
     # Forward pass (different output keys for each model)
     if model_type == "lira":
-        output = model(input_ids, return_confidence=True)
+        output = model(input_ids, num_refine_steps=num_refine_steps, return_confidence=True)
         logits = output["logits"]
         confidence = output["confidence"]
         conf_logits = output.get("conf_logits")
     elif model_type == "hybrid":
-        output = model(input_ids, return_confidence=True, return_coherence=True, training=True)
+        output = model(input_ids, num_refine_steps=num_refine_steps, return_confidence=True, return_coherence=True, training=True)
         logits = output["logits"]
         confidence = output["confidence"]
         conf_logits = output.get("conf_logits")

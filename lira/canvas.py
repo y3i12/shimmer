@@ -102,6 +102,31 @@ class EntropyConfidenceHead(nn.Module):
         return self.combine(combined)  # [B, L, 1]
 
 
+class MLPTokenHead(nn.Module):
+    """
+    MLP-based token prediction head.
+
+    Adds non-linear feature recombination before projecting to vocabulary.
+    Can learn iteration-aware decoding patterns.
+    """
+    def __init__(self, hidden_size: int, vocab_size: int):
+        super().__init__()
+        self.mlp = nn.Sequential(
+            nn.Linear(hidden_size, hidden_size),
+            nn.GELU(),
+            nn.Linear(hidden_size, vocab_size, bias=False),
+        )
+
+    def forward(self, z: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            z: Hidden states [B, L, D]
+        Returns:
+            Token logits [B, L, V]
+        """
+        return self.mlp(z)
+
+
 @dataclass
 class LatentCanvasConfig:
     """Configuration for Latent Canvas Model."""
@@ -116,7 +141,8 @@ class LatentCanvasConfig:
     # Refinement settings
     num_refine_steps: int = 1  # K: how many times to apply RefineBlock
 
-    # Confidence head settings
+    # Head settings
+    token_head_type: str = "linear"  # "linear" or "mlp"
     confidence_head_type: str = "mlp"  # "linear", "mlp", or "entropy"
 
     # Hybrid Mamba settings
@@ -186,8 +212,13 @@ class LatentCanvasModel(nn.Module):
             )
             self.use_hybrid = False
 
-        # Output heads
-        self.token_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
+        # Token head (based on config)
+        if config.token_head_type == "linear":
+            self.token_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
+        elif config.token_head_type == "mlp":
+            self.token_head = MLPTokenHead(config.hidden_size, config.vocab_size)
+        else:
+            raise ValueError(f"Unknown token_head_type: {config.token_head_type}")
 
         # Confidence head (based on config)
         if config.confidence_head_type == "linear":
