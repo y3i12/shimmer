@@ -221,9 +221,22 @@ def main():
     parser.add_argument("--temperature", type=float, default=0.8,
                         help="Sampling temperature")
     parser.add_argument("--num_steps", type=int, default=None,
-                        help="Number of generation steps (LIRA: default=max_new_tokens)")
+                        help="Number of generation steps (LIRA topk: default=max_new_tokens)")
     parser.add_argument("--num_refine_steps", type=int, default=2,
                         help="Refinement steps per token (Dialectic only)")
+
+    # Revision mode (new unified approach)
+    parser.add_argument("--mode", type=str, default="revision",
+                        choices=["topk", "revision"],
+                        help="Generation mode: topk (fill masks by confidence rank) or revision (iterative refinement)")
+    parser.add_argument("--min_passes", type=int, default=1,
+                        help="Minimum refinement passes (revision mode)")
+    parser.add_argument("--max_passes", type=int, default=100,
+                        help="Maximum refinement passes (revision mode)")
+    parser.add_argument("--revision_threshold", type=float, default=0.7,
+                        help="Confidence threshold for revision (below = can be revised)")
+    parser.add_argument("--no_auto_stop", action="store_true",
+                        help="Disable auto-stop when all positions confident")
     parser.add_argument("--device", type=str, default="cuda",
                         help="Device to use (cuda/cpu)")
     parser.add_argument("--gpu", type=int, default=0,
@@ -308,24 +321,52 @@ def main():
     print(f"Temperature: {args.temperature}, Max tokens: {args.max_new_tokens}")
     if model_type == "dialectic":
         print(f"Refine steps: {args.num_refine_steps}")
+    if model_type == "lira":
+        print(f"Mode: {args.mode}")
+        if args.mode == "revision":
+            print(f"Revision: min_passes={args.min_passes}, max_passes={args.max_passes}, threshold={args.revision_threshold}")
     print(f"{'='*60}\n")
 
     for i in range(args.num_samples):
         print(f"--- Sample {i+1}/{args.num_samples} ---")
 
         if model_type == "lira":
-            generated = generate_lira(
-                model=model,
-                tokenizer=tokenizer,
-                tokenizer_type=tokenizer_type,
-                prompt=args.prompt,
-                max_new_tokens=args.max_new_tokens,
-                temperature=args.temperature,
-                num_steps=args.num_steps,
-                device=args.device,
-                verbose=args.verbose,
-            )
-            print(generated)
+            if args.mode == "revision":
+                # New unified revision approach
+                prompt_ids = encode_prompt(tokenizer, tokenizer_type, args.prompt)
+                prompt_tensor = torch.tensor([prompt_ids], device=device)
+
+                canvas, history, stats = model.generate_with_revision(
+                    prompt_ids=prompt_tensor,
+                    gen_length=args.max_new_tokens,
+                    min_passes=args.min_passes,
+                    max_passes=args.max_passes,
+                    auto_stop=not args.no_auto_stop,
+                    revision_threshold=args.revision_threshold,
+                    temperature=args.temperature,
+                    return_history=args.verbose,
+                )
+
+                generated = decode_tokens(tokenizer, tokenizer_type, canvas[0].cpu().tolist())
+                print(generated)
+
+                if args.verbose:
+                    print(f"  [Passes: {stats['total_passes']}, Revisions: {stats['total_revisions']}, "
+                          f"Stopped by: {stats['stopped_by']}]")
+            else:
+                # Legacy topk mode
+                generated = generate_lira(
+                    model=model,
+                    tokenizer=tokenizer,
+                    tokenizer_type=tokenizer_type,
+                    prompt=args.prompt,
+                    max_new_tokens=args.max_new_tokens,
+                    temperature=args.temperature,
+                    num_steps=args.num_steps,
+                    device=args.device,
+                    verbose=args.verbose,
+                )
+                print(generated)
         else:  # dialectic
             generated, stats = generate_dialectic(
                 model=model,

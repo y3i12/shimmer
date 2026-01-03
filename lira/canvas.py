@@ -677,6 +677,134 @@ class LatentCanvasModel(nn.Module):
 
         return canvas, history
 
+    @torch.no_grad()
+    def generate_with_revision(
+        self,
+        prompt_ids: torch.Tensor,
+        gen_length: int,
+        min_passes: int = 1,
+        max_passes: int = 100,
+        auto_stop: bool = True,
+        revision_threshold: float = 0.7,
+        temperature: float = 0.8,
+        return_history: bool = True,
+    ) -> tuple[torch.Tensor, list[torch.Tensor], dict]:
+        """
+        Generate with iterative revision.
+
+        Core insight: [MASK] is just confidence=0 (uninitialized).
+        ANY low-confidence token can be revised, not just masks.
+
+        The model learns to:
+        1. Fill masks (conf=0 → something)
+        2. Revise uncertain tokens (low conf → better prediction)
+        3. Stop when confident (all positions above threshold)
+
+        Args:
+            prompt_ids: Prompt token IDs [B, prompt_len]
+            gen_length: Number of tokens to generate
+            min_passes: Minimum refinement passes (for experimentation)
+            max_passes: Maximum passes (safety limit)
+            auto_stop: Stop when all positions confident
+            revision_threshold: Confidence threshold for revision
+            temperature: Sampling temperature
+            return_history: Return canvas history for visualization
+
+        Returns:
+            canvas: Final token IDs [B, prompt_len + gen_length]
+            history: List of canvas states (if return_history)
+            stats: Generation statistics
+        """
+        B = prompt_ids.size(0)
+        device = prompt_ids.device
+        mask_token = self.config.mask_token_id
+
+        # Initialize canvas: prompt + masks
+        canvas = torch.cat([
+            prompt_ids,
+            torch.full((B, gen_length), mask_token, device=device, dtype=torch.long)
+        ], dim=1)
+
+        prompt_len = prompt_ids.size(1)
+        history = [canvas.clone()] if return_history else []
+
+        # Track statistics
+        stats = {
+            "total_passes": 0,
+            "total_revisions": 0,
+            "masks_filled": 0,
+            "stopped_by": None,
+        }
+
+        for pass_num in range(max_passes):
+            stats["total_passes"] += 1
+
+            # Forward pass
+            output = self.forward(canvas, return_confidence=True)
+            logits = output["logits"]
+            confidence = output["confidence"]  # [B, L]
+
+            # Sample predictions
+            if temperature > 0:
+                probs = F.softmax(logits / temperature, dim=-1)
+                predictions = torch.multinomial(
+                    probs.view(-1, probs.size(-1)), 1
+                ).view(B, -1)
+            else:
+                predictions = logits.argmax(dim=-1)
+
+            # Track changes this pass
+            pass_revisions = 0
+            pass_fills = 0
+
+            # Process generation region only
+            for pos in range(prompt_len, canvas.size(1)):
+                for b in range(B):
+                    current_token = canvas[b, pos].item()
+                    new_token = predictions[b, pos].item()
+                    pos_confidence = confidence[b, pos].item()
+
+                    is_mask = (current_token == mask_token)
+                    is_low_conf = (pos_confidence < revision_threshold)
+                    is_different = (new_token != current_token)
+
+                    # Fill masks (conf=0 by definition) OR revise low-confidence
+                    if is_mask:
+                        canvas[b, pos] = new_token
+                        pass_fills += 1
+                    elif is_low_conf and is_different:
+                        canvas[b, pos] = new_token
+                        pass_revisions += 1
+
+            stats["masks_filled"] += pass_fills
+            stats["total_revisions"] += pass_revisions
+
+            if return_history:
+                history.append(canvas.clone())
+
+            # Check stopping conditions
+            if auto_stop and pass_num >= min_passes - 1:
+                # Check if all generation positions are confident
+                gen_confidence = confidence[:, prompt_len:]
+                min_conf = gen_confidence.min().item()
+
+                # Also check no masks remain
+                no_masks = (canvas[:, prompt_len:] != mask_token).all()
+
+                if min_conf >= revision_threshold and no_masks:
+                    stats["stopped_by"] = "confidence"
+                    break
+
+            # Check if no changes were made (converged)
+            if pass_fills == 0 and pass_revisions == 0 and pass_num >= min_passes - 1:
+                stats["stopped_by"] = "converged"
+                break
+
+        if stats["stopped_by"] is None:
+            stats["stopped_by"] = "max_passes"
+
+        return canvas, history, stats
+
 
 def count_parameters(model: nn.Module) -> int:
     """Count trainable parameters."""
