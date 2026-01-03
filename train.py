@@ -135,6 +135,10 @@ def parse_args():
     parser.add_argument("--confidence_head_type", type=str, default="mlp",
                         choices=["linear", "mlp", "entropy"],
                         help="Confidence head: linear (~1K), mlp (~660K), entropy (~4.2M, uses logits)")
+    parser.add_argument("--use_coherence_head", action="store_true",
+                        help="Enable ELECTRA-style coherence head (detects replaced tokens)")
+    parser.add_argument("--coherence_replace_prob", type=float, default=0.15,
+                        help="Probability of replacing tokens for coherence training (default: 0.15)")
 
     # LIRA-specific
     parser.add_argument("--num_refine_steps", type=int, default=1,
@@ -295,6 +299,7 @@ def create_model(args, vocab_size: int, mask_token_id: int):
             token_head_type=args.token_head_type,
             confidence_head_type=args.confidence_head_type,
             use_progress_embedding=args.use_progress_embedding,
+            use_coherence_head=getattr(args, 'use_coherence_head', False),
             mask_token_id=mask_token_id,
             hybrid_mode=args.hybrid_mode,
             mamba_ratio=args.mamba_ratio,
@@ -344,6 +349,9 @@ def compute_loss(
     random_k: bool = False,
     k_min: int = 1,
     k_max: int = 16,
+    use_coherence: bool = False,
+    coherence_replace_prob: float = 0.15,
+    vocab_size: int = 10000,
 ) -> dict[str, torch.Tensor]:
     """
     Compute loss based on phase and model type.
@@ -372,12 +380,30 @@ def compute_loss(
     mask_positions = batch["mask_positions"].to(device)
     mask_ratio = batch["mask_ratio"].to(device)
 
+    # ELECTRA-style coherence training: replace some tokens with random ones
+    coherence_labels = None
+    if use_coherence and model_type == "lira":
+        # Create coherence labels: 1 = original, 0 = replaced
+        coherence_labels = torch.ones_like(input_ids, dtype=torch.float)
+
+        # Only replace non-masked positions (we want to detect replaced TOKENS, not masks)
+        replaceable = ~mask_positions
+        replace_mask = (torch.rand_like(input_ids.float()) < coherence_replace_prob) & replaceable
+
+        # Replace with random tokens
+        random_tokens = torch.randint(0, vocab_size, input_ids.shape, device=device)
+        input_ids = torch.where(replace_mask, random_tokens, input_ids)
+
+        # Labels: 0 for replaced, 1 for original
+        coherence_labels[replace_mask] = 0.0
+
     # Forward pass (different output keys for each model)
     if model_type == "lira":
-        output = model(input_ids, num_refine_steps=num_refine_steps, return_confidence=True)
+        output = model(input_ids, num_refine_steps=num_refine_steps, return_confidence=True, return_coherence=use_coherence)
         logits = output["logits"]
         confidence = output["confidence"]
         conf_logits = output.get("conf_logits")
+        coh_logits = output.get("coh_logits")
     elif model_type == "hybrid":
         output = model(input_ids, num_refine_steps=num_refine_steps, return_confidence=True, return_coherence=True, training=True)
         logits = output["logits"]
@@ -408,6 +434,18 @@ def compute_loss(
         "loss": weighted_loss,
         "token_loss": weighted_loss.detach(),
     }
+
+    # Coherence loss (ELECTRA-style: detect replaced tokens)
+    if use_coherence and model_type == "lira" and coh_logits is not None and coherence_labels is not None:
+        # Compute coherence loss on non-masked positions (where we replaced tokens)
+        non_masked = ~mask_positions
+        if non_masked.any():
+            coh_loss = F.binary_cross_entropy_with_logits(
+                coh_logits[non_masked],
+                coherence_labels[non_masked],
+            )
+            result["loss"] = result["loss"] + 0.5 * coh_loss  # Weight coherence loss
+            result["coh_loss"] = coh_loss.detach()
 
     # Phase 4: Add confidence supervision
     if phase == 4:
@@ -860,7 +898,10 @@ def train_progressive(args):
                     result = compute_loss(
                         model, batch, phase_for_loss, device,
                         args.model, stage_config.num_refine_steps,
-                        random_k=args.random_k, k_min=stage_k_min, k_max=stage_k_max
+                        random_k=args.random_k, k_min=stage_k_min, k_max=stage_k_max,
+                        use_coherence=getattr(args, 'use_coherence_head', False),
+                        coherence_replace_prob=getattr(args, 'coherence_replace_prob', 0.15),
+                        vocab_size=vocab_size,
                     )
                     scaled_loss = result["loss"] / effective_batch_size
                 scaler.scale(scaled_loss).backward()
@@ -875,7 +916,10 @@ def train_progressive(args):
                 result = compute_loss(
                     model, batch, phase_for_loss, device,
                     args.model, stage_config.num_refine_steps,
-                    random_k=args.random_k, k_min=stage_k_min, k_max=stage_k_max
+                    random_k=args.random_k, k_min=stage_k_min, k_max=stage_k_max,
+                    use_coherence=getattr(args, 'use_coherence_head', False),
+                    coherence_replace_prob=getattr(args, 'coherence_replace_prob', 0.15),
+                    vocab_size=vocab_size,
                 )
                 scaled_loss = result["loss"] / effective_batch_size
                 scaled_loss.backward()
@@ -911,6 +955,9 @@ def train_progressive(args):
 
                 if stage_config.use_confidence_loss and "conf_loss" in result:
                     log_parts.append(f"ConfLoss {result['conf_loss'].item():.4f}")
+
+                if "coh_loss" in result:
+                    log_parts.append(f"CohLoss {result['coh_loss'].item():.4f}")
 
                 print(" | ".join(log_parts))
 

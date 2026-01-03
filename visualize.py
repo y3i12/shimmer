@@ -590,7 +590,7 @@ class GenerationVisualizer:
         auto_stop: bool = True,
         frame_duration: float = 0.15,
         width: int = 800,
-        hold_final_frames: int = 10,
+        hold_final_frames: int = 30,
         use_semantic_critic: bool = False,
         surprise_threshold: float = 5.0,
     ) -> str:

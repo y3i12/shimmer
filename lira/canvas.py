@@ -50,6 +50,37 @@ class MLPConfidenceHead(nn.Module):
         return self.mlp(z)
 
 
+class MLPCoherenceHead(nn.Module):
+    """
+    MLP-based coherence head (ELECTRA-style).
+
+    Predicts whether each token is "natural" (belongs in context) or
+    "replaced" (doesn't fit semantically).
+
+    Unlike confidence (which predicts reconstruction accuracy),
+    coherence predicts semantic fit - crucial for generation where
+    there's no "original" to compare against.
+    """
+    def __init__(self, hidden_size: int):
+        super().__init__()
+        self.mlp = nn.Sequential(
+            nn.Linear(hidden_size, hidden_size // 2),
+            nn.GELU(),
+            nn.Linear(hidden_size // 2, hidden_size // 4),
+            nn.GELU(),
+            nn.Linear(hidden_size // 4, 1),
+        )
+
+    def forward(self, z: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            z: Hidden states [B, L, D]
+        Returns:
+            Coherence logits [B, L, 1] (higher = more coherent/natural)
+        """
+        return self.mlp(z)
+
+
 class EntropyConfidenceHead(nn.Module):
     """
     Entropy-aware confidence head.
@@ -144,6 +175,7 @@ class LatentCanvasConfig:
     # Head settings
     token_head_type: str = "linear"  # "linear" or "mlp"
     confidence_head_type: str = "mlp"  # "linear", "mlp", or "entropy"
+    use_coherence_head: bool = False  # ELECTRA-style semantic coherence head
 
     # Progress embedding (iteration awareness)
     use_progress_embedding: bool = False  # Inject iteration progress signal
@@ -233,6 +265,12 @@ class LatentCanvasModel(nn.Module):
             self.confidence_head = EntropyConfidenceHead(config.hidden_size)
         else:
             raise ValueError(f"Unknown confidence_head_type: {config.confidence_head_type}")
+
+        # Coherence head (ELECTRA-style: detect replaced tokens)
+        if config.use_coherence_head:
+            self.coherence_head = MLPCoherenceHead(config.hidden_size)
+        else:
+            self.coherence_head = None
 
         # Tie embeddings with output (optional but common)
         # self.token_head.weight = self.embed_tokens.weight[:-1]  # Exclude mask token
@@ -325,6 +363,26 @@ class LatentCanvasModel(nn.Module):
             conf_logits = self.confidence_head(z, logits)  # logits ignored for mlp/linear
         return torch.sigmoid(conf_logits).squeeze(-1)
 
+    def get_coherence(self, z: torch.Tensor) -> torch.Tensor:
+        """
+        Measure semantic coherence at each position.
+
+        Unlike confidence (reconstruction accuracy), coherence measures
+        whether the token "fits" semantically in context - trained via
+        ELECTRA-style replaced token detection.
+
+        Args:
+            z: Latent canvas [B, L, D]
+
+        Returns:
+            Coherence scores [B, L] in range [0, 1]
+            Returns None if coherence head is not enabled.
+        """
+        if self.coherence_head is None:
+            return None
+        coh_logits = self.coherence_head(z)
+        return torch.sigmoid(coh_logits).squeeze(-1)
+
     def decode(self, z: torch.Tensor) -> torch.Tensor:
         """
         Decode latent canvas to token logits.
@@ -339,6 +397,7 @@ class LatentCanvasModel(nn.Module):
         input_ids: torch.Tensor,
         num_refine_steps: Optional[int] = None,
         return_confidence: bool = True,
+        return_coherence: bool = False,
         return_intermediates: bool = False
     ) -> dict[str, torch.Tensor]:
         """
@@ -348,12 +407,14 @@ class LatentCanvasModel(nn.Module):
             input_ids: Input token IDs [B, L] (with masks)
             num_refine_steps: Override default refinement steps
             return_confidence: Also return confidence scores
+            return_coherence: Also return coherence scores (if head enabled)
             return_intermediates: Return intermediate latent states
 
         Returns:
             Dictionary with:
                 - logits: Token logits [B, L, vocab_size]
                 - confidence: Confidence scores [B, L] (if requested)
+                - coherence: Coherence scores [B, L] (if requested and enabled)
                 - intermediates: List of latent states (if requested)
         """
         # Embed to latent canvas
@@ -375,6 +436,11 @@ class LatentCanvasModel(nn.Module):
             conf_logits = self.confidence_head(z, logits).squeeze(-1)
             result["confidence"] = torch.sigmoid(conf_logits)
             result["conf_logits"] = conf_logits  # Raw logits for training
+
+        if return_coherence and self.coherence_head is not None:
+            coh_logits = self.coherence_head(z).squeeze(-1)
+            result["coherence"] = torch.sigmoid(coh_logits)
+            result["coh_logits"] = coh_logits  # Raw logits for training
 
         if return_intermediates:
             result["intermediates"] = intermediates
