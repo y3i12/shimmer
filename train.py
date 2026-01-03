@@ -710,6 +710,10 @@ def train_progressive(args):
     print(f"  Start stage: {args.start_stage}")
     print(f"{'='*60}\n")
 
+    # Gradient accumulation
+    accum_steps = args.gradient_accumulation_steps
+    effective_batch_size = args.batch_size * accum_steps
+
     # Load ALL data upfront
     print(f"Loading data from '{args.dataset}'...")
     all_train_tokens, vocab_size, tokenizer = load_dataset_by_name(
@@ -797,7 +801,7 @@ def train_progressive(args):
 
     # Scheduler spans all epochs
     total_steps_estimate = sum(
-        (len(stage_data[s]) // args.batch_size) * args.stage_epochs
+        (len(stage_data[s]) // effective_batch_size) * args.stage_epochs
         for s in range(1, 4)
     ) // args.gradient_accumulation_steps
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, max(1, total_steps_estimate))
@@ -812,10 +816,6 @@ def train_progressive(args):
     best_val_loss = float("inf")
     global_step = 0
     start_time = datetime.datetime.now()
-
-    # Gradient accumulation
-    accum_steps = args.gradient_accumulation_steps
-    effective_batch_size = args.batch_size * accum_steps
 
     print(f"\nGradient accumulation: {accum_steps} steps → effective batch size: {effective_batch_size}")
 
@@ -1001,7 +1001,7 @@ def train_progressive(args):
         )
 
         avg_epoch_loss = (epoch_loss // epoch_batches) / effective_batch_size
-        val_loss = val_metrics['val_loss'] / args.batch_size
+        val_loss = val_metrics['val_loss'] / effective_batch_size
 
         print(f"\n[Stage {current_stage}] Epoch {epoch+1}/{total_epochs} completed in {epoch_time:.1f}s")
         print(f"  TrainLoss: {avg_epoch_loss:.4f} | ValLoss: {val_loss:.4f} | ValAcc: {val_metrics['val_acc']:.2f}%")
@@ -1207,6 +1207,10 @@ def train(args):
     # Mixed precision
     scaler = GradScaler('cuda') if args.fp16 else None
 
+    # Gradient accumulation setup
+    accum_steps = args.gradient_accumulation_steps
+    effective_batch_size = args.batch_size * accum_steps
+
     # Resume training state if requested
     start_epoch = 0
     resumed_global_step = 0
@@ -1251,7 +1255,7 @@ def train(args):
         # Restore best val loss
         if "best_val_loss" in checkpoint:
             resumed_best_val_loss = checkpoint["best_val_loss"]
-            print(f"  ✓ Best val loss so far: {resumed_best_val_loss / args.batch_size:.4f}")
+            print(f"  ✓ Best val loss so far: {resumed_best_val_loss / effective_batch_size:.4f}")
     elif args.resume and checkpoint is None:
         print("\n⚠ --resume specified but no checkpoint loaded, starting fresh")
 
@@ -1263,9 +1267,6 @@ def train(args):
         if args.hybrid_mode:
             ckpt_prefix += f"_{args.hybrid_mode}"
 
-    # Gradient accumulation setup
-    accum_steps = args.gradient_accumulation_steps
-    effective_batch_size = args.batch_size * accum_steps
 
     # Training loop
     best_val_loss = resumed_best_val_loss
@@ -1386,7 +1387,7 @@ def train(args):
                     args.model, args.num_refine_steps
                 )
                 last_val = datetime.datetime.now() # after evaluation/validation wait eval_every seconds
-                last_validation_log = (val_metrics['val_loss'] / args.batch_size)
+                last_validation_log = (val_metrics['val_loss'] / effective_batch_size)
                 train_loss = 0
                 if global_step > 0:
                     train_loss = (epoch_loss / global_step)
@@ -1411,11 +1412,11 @@ def train(args):
                         "args": args,
                         "global_step": global_step,
                         "best_val_loss": best_val_loss,
-                        "val_loss": best_val_loss / args.batch_size,
+                        "val_loss": best_val_loss / effective_batch_size,
                         "model_type": args.model,
                         "dataset": args.dataset,
                     }, f"{args.checkpoint_dir}/{ckpt_prefix}_best.pt")
-                    print(f"  Saved best checkpoint (val_loss={best_val_loss / args.batch_size:.4f})")
+                    print(f"  Saved best checkpoint (val_loss={best_val_loss / effective_batch_size:.4f})")
 
                 # Clear memory after evaluation to reduce fragmentation
                 clear_memory()
@@ -1437,7 +1438,7 @@ def train(args):
             "args": args,
             "global_step": global_step,
             "best_val_loss": best_val_loss,
-            "val_loss": best_val_loss / args.batch_size,
+            "val_loss": best_val_loss / effective_batch_size,
             "model_type": args.model,
             "dataset": args.dataset,
         }, f"{args.checkpoint_dir}/{ckpt_prefix}_last.pt")
@@ -1445,7 +1446,7 @@ def train(args):
         epoch_summary = f"\nEpoch {epoch+1}/{args.epochs} completed in {epoch_time:.1f}s"
         if global_step > 0 : 
             epoch_summary += f"\n TrainLoss: {(epoch_loss/global_step):.4f}"
-        epoch_summary += f" | Val Loss: {val_metrics['val_loss'] / args.batch_size:.4f}"
+        epoch_summary += f" | Val Loss: {val_metrics['val_loss'] / effective_batch_size:.4f}"
         epoch_summary += f" | Val Acc: {val_metrics['val_acc']:.2f}%"
 
         if "avg_backtracks" in val_metrics:
