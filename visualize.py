@@ -184,6 +184,8 @@ class GenerationVisualizer:
         num_steps: int = None,
         max_passes: int = None,
         revision_threshold: float = 0.7,
+        coherence_threshold: float = 0.7,
+        use_coherence: bool = True,
         temperature: float = 0.8,
         use_semantic_critic: bool = False,
         surprise_threshold: float = 5.0,
@@ -193,7 +195,7 @@ class GenerationVisualizer:
         Generate text using topk approach, then optionally revise.
 
         Phase 1: Fill masks gradually (most confident first) - stable
-        Phase 2: Revise low-confidence tokens (if max_passes > num_steps)
+        Phase 2: Revise low-confidence OR low-coherence tokens (if max_passes > num_steps)
 
         Returns:
             history: List of (tokens, confidences, revised_flags) tuples
@@ -370,14 +372,32 @@ class GenerationVisualizer:
                             # Use negative surprise as "confidence" for sorting (higher surprise = lower score)
                             candidates.append((pos, -pos_surprise))
                 else:
-                    # Original: Find revision candidates using LIRA confidence
+                    # Find revision candidates using LIRA confidence AND coherence
+                    # Check if model has coherence head
+                    has_coherence = hasattr(self.model, 'coherence_head') and self.model.coherence_head is not None
+                    coherence = None
+                    if has_coherence and use_coherence:
+                        coherence = self.model.get_coherence(result.get("latent", None))
+
                     candidates = []
                     for pos in range(prompt_len, canvas.size(1)):
                         if pos in locked_positions:
                             continue
                         pos_confidence = confidence[0, pos].item()
-                        if pos_confidence < revision_threshold:
-                            candidates.append((pos, pos_confidence))
+
+                        # Check coherence if available
+                        pos_coherence = 1.0  # Default: assume coherent
+                        if coherence is not None:
+                            pos_coherence = coherence[0, pos].item()
+
+                        # Candidate if low confidence OR low coherence
+                        is_low_conf = pos_confidence < revision_threshold
+                        is_low_coh = pos_coherence < coherence_threshold
+
+                        if is_low_conf or is_low_coh:
+                            # Score: average of both (lower = worse = higher priority to revise)
+                            score = (pos_confidence + pos_coherence) / 2.0
+                            candidates.append((pos, score))
 
                 # No candidates = stable, we're done
                 if not candidates:
@@ -586,6 +606,8 @@ class GenerationVisualizer:
         min_passes: int = 1,
         max_passes: int = 100,
         revision_threshold: float = 0.7,
+        coherence_threshold: float = 0.7,
+        use_coherence: bool = True,
         temperature: float = 0.8,
         auto_stop: bool = True,
         frame_duration: float = 0.15,
@@ -620,8 +642,9 @@ class GenerationVisualizer:
         # Phase 2: Revision passes (if max_passes > max_new_tokens)
         num_steps = max_new_tokens
         critic_info = " + GPT-2 semantic critic" if use_semantic_critic else ""
-        print(f"Generating: topk fill ({num_steps} steps) + revision (up to {max_passes} total passes){critic_info}...")
-        print(f"  Temperature: {temperature}, Revision threshold: {revision_threshold}")
+        coherence_info = " + coherence head" if use_coherence else ""
+        print(f"Generating: topk fill ({num_steps} steps) + revision (up to {max_passes} total passes){critic_info}{coherence_info}...")
+        print(f"  Temperature: {temperature}, Revision threshold: {revision_threshold}, Coherence threshold: {coherence_threshold}")
         if use_semantic_critic:
             print(f"  Semantic critic: surprise_threshold={surprise_threshold}")
         history, stats = self.generate_with_history(
@@ -630,6 +653,8 @@ class GenerationVisualizer:
             num_steps=num_steps,
             max_passes=max_passes,
             revision_threshold=revision_threshold,
+            coherence_threshold=coherence_threshold,
+            use_coherence=use_coherence,
             temperature=temperature,
             use_semantic_critic=use_semantic_critic,
             surprise_threshold=surprise_threshold,
@@ -706,6 +731,10 @@ def main():
     parser.add_argument("--max_passes", type=int, default=100, help="Maximum refinement passes")
     parser.add_argument("--revision_threshold", type=float, default=0.7,
                         help="Confidence threshold for revision (below = can be revised)")
+    parser.add_argument("--coherence_threshold", type=float, default=0.7,
+                        help="Coherence threshold for revision (below = semantically odd, can be revised)")
+    parser.add_argument("--no_coherence", action="store_true",
+                        help="Disable coherence-based revision (use confidence only)")
     parser.add_argument("--no_auto_stop", action="store_true",
                         help="Disable auto-stop when all positions confident")
 
@@ -792,6 +821,8 @@ def main():
         min_passes=args.min_passes,
         max_passes=args.max_passes,
         revision_threshold=args.revision_threshold,
+        coherence_threshold=args.coherence_threshold,
+        use_coherence=not args.no_coherence,
         temperature=args.temperature,
         auto_stop=not args.no_auto_stop,
         width=args.width,

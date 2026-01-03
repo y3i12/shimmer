@@ -752,27 +752,30 @@ class LatentCanvasModel(nn.Module):
         max_passes: int = 100,
         auto_stop: bool = True,
         revision_threshold: float = 0.7,
+        coherence_threshold: float = 0.7,
+        use_coherence: bool = True,
         temperature: float = 0.8,
         return_history: bool = True,
     ) -> tuple[torch.Tensor, list[torch.Tensor], dict]:
         """
-        Generate with iterative revision.
+        Generate with iterative revision using confidence AND coherence.
 
         Core insight: [MASK] is just confidence=0 (uninitialized).
-        ANY low-confidence token can be revised, not just masks.
+        ANY low-confidence OR low-coherence token can be revised.
 
-        The model learns to:
-        1. Fill masks (conf=0 → something)
-        2. Revise uncertain tokens (low conf → better prediction)
-        3. Stop when confident (all positions above threshold)
+        The model uses two signals:
+        - Confidence: "Did I predict the right token?" (reconstruction accuracy)
+        - Coherence: "Does this token fit semantically?" (ELECTRA-style detection)
 
         Args:
             prompt_ids: Prompt token IDs [B, prompt_len]
             gen_length: Number of tokens to generate
             min_passes: Minimum refinement passes (for experimentation)
             max_passes: Maximum passes (safety limit)
-            auto_stop: Stop when all positions confident
+            auto_stop: Stop when all positions confident/coherent
             revision_threshold: Confidence threshold for revision
+            coherence_threshold: Coherence threshold for revision
+            use_coherence: Whether to use coherence head (if available)
             temperature: Sampling temperature
             return_history: Return canvas history for visualization
 
@@ -784,6 +787,7 @@ class LatentCanvasModel(nn.Module):
         B = prompt_ids.size(0)
         device = prompt_ids.device
         mask_token = self.config.mask_token_id
+        has_coherence = hasattr(self, 'coherence_head') and self.coherence_head is not None
 
         # Initialize canvas: prompt + masks
         canvas = torch.cat([
@@ -800,15 +804,21 @@ class LatentCanvasModel(nn.Module):
             "total_revisions": 0,
             "masks_filled": 0,
             "stopped_by": None,
+            "using_coherence": has_coherence and use_coherence,
         }
 
         for pass_num in range(max_passes):
             stats["total_passes"] += 1
 
-            # Forward pass
+            # Forward pass - get both confidence and coherence
             output = self.forward(canvas, return_confidence=True)
             logits = output["logits"]
             confidence = output["confidence"]  # [B, L]
+
+            # Get coherence if available
+            coherence = None
+            if has_coherence and use_coherence:
+                coherence = self.get_coherence(output["last_hidden"])  # [B, L]
 
             # Sample predictions
             if temperature > 0:
@@ -830,15 +840,23 @@ class LatentCanvasModel(nn.Module):
                     new_token = predictions[b, pos].item()
                     pos_confidence = confidence[b, pos].item()
 
+                    # Check coherence if available
+                    pos_coherence = 1.0  # Default: assume coherent
+                    if coherence is not None:
+                        pos_coherence = coherence[b, pos].item()
+
                     is_mask = (current_token == mask_token)
                     is_low_conf = (pos_confidence < revision_threshold)
+                    is_low_coherence = (pos_coherence < coherence_threshold)
                     is_different = (new_token != current_token)
 
-                    # Fill masks (conf=0 by definition) OR revise low-confidence
+                    # Fill masks (conf=0 by definition)
+                    # OR revise low-confidence tokens
+                    # OR revise low-coherence tokens (semantically odd)
                     if is_mask:
                         canvas[b, pos] = new_token
                         pass_fills += 1
-                    elif is_low_conf and is_different:
+                    elif is_different and (is_low_conf or is_low_coherence):
                         canvas[b, pos] = new_token
                         pass_revisions += 1
 
@@ -850,15 +868,20 @@ class LatentCanvasModel(nn.Module):
 
             # Check stopping conditions
             if auto_stop and pass_num >= min_passes - 1:
-                # Check if all generation positions are confident
+                # Check if all generation positions are confident AND coherent
                 gen_confidence = confidence[:, prompt_len:]
                 min_conf = gen_confidence.min().item()
+
+                min_coh = 1.0
+                if coherence is not None:
+                    gen_coherence = coherence[:, prompt_len:]
+                    min_coh = gen_coherence.min().item()
 
                 # Also check no masks remain
                 no_masks = (canvas[:, prompt_len:] != mask_token).all()
 
-                if min_conf >= revision_threshold and no_masks:
-                    stats["stopped_by"] = "confidence"
+                if min_conf >= revision_threshold and min_coh >= coherence_threshold and no_masks:
+                    stats["stopped_by"] = "confident_and_coherent"
                     break
 
             # Check if no changes were made (converged)

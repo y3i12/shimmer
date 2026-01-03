@@ -235,6 +235,10 @@ def main():
                         help="Maximum refinement passes (revision mode)")
     parser.add_argument("--revision_threshold", type=float, default=0.7,
                         help="Confidence threshold for revision (below = can be revised)")
+    parser.add_argument("--coherence_threshold", type=float, default=0.7,
+                        help="Coherence threshold for revision (below = semantically odd, can be revised)")
+    parser.add_argument("--no_coherence", action="store_true",
+                        help="Disable coherence-based revision (use confidence only)")
     parser.add_argument("--no_auto_stop", action="store_true",
                         help="Disable auto-stop when all positions confident")
     parser.add_argument("--device", type=str, default="cuda",
@@ -343,6 +347,8 @@ def main():
                     max_passes=args.max_passes,
                     auto_stop=not args.no_auto_stop,
                     revision_threshold=args.revision_threshold,
+                    coherence_threshold=args.coherence_threshold,
+                    use_coherence=not args.no_coherence,
                     temperature=args.temperature,
                     return_history=args.verbose,
                 )
@@ -351,8 +357,9 @@ def main():
                 print(generated)
 
                 if args.verbose:
+                    coh_str = f", Using coherence: {stats.get('using_coherence', False)}" if not args.no_coherence else ""
                     print(f"  [Passes: {stats['total_passes']}, Revisions: {stats['total_revisions']}, "
-                          f"Stopped by: {stats['stopped_by']}]")
+                          f"Stopped by: {stats['stopped_by']}{coh_str}]")
             else:
                 # Legacy topk mode
                 generated = generate_lira(

@@ -969,7 +969,7 @@ def train_progressive(args):
                 )
                 last_val = datetime.datetime.now()
 
-                val_loss = val_metrics['val_loss'] / args.batch_size
+                val_loss = val_metrics['val_loss'] / effective_batch_size
                 train_loss = (epoch_loss / epoch_batches if epoch_batches > 0 else 0) / effective_batch_size
 
                 print(f"\n  Validation: TrainLoss {train_loss:.4f} | ValLoss {val_loss:.4f} | ValAcc {val_metrics['val_acc']:.2f}%\n")
