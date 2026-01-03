@@ -13,3 +13,12 @@ checkpoints/gpt_12m_baseline_final.pt filter=lfs diff=lfs merge=lfs -text
 checkpoints/lira_50m_progressive_final.pt filter=lfs diff=lfs merge=lfs -text
 tokenizers/shimmer_tinystories_9995.model filter=lfs diff=lfs merge=lfs -text
 tokenizers/shimmer_tinystories_9995.vocab filter=lfs diff=lfs merge=lfs -text
+checkpoints/.pt filter=lfs diff=lfs merge=lfs -text
+checkpoints/lira_285m_agentic_final.pt filter=lfs diff=lfs merge=lfs -text
+checkpoints/lira_285m_agentic_stage4.pt filter=lfs diff=lfs merge=lfs -text
+tokenizers/shimmer_agentic_9995.vocab filter=lfs diff=lfs merge=lfs -text
+tokenizers/shimmer_blend_10000.model filter=lfs diff=lfs merge=lfs -text
+tokenizers/shimmer_blend_10000.vocab filter=lfs diff=lfs merge=lfs -text
+tokenizers/shimmer_blend_15995.model filter=lfs diff=lfs merge=lfs -text
+tokenizers/shimmer_blend_15995.vocab filter=lfs diff=lfs merge=lfs -text
+tokenizers/shimmer_agentic_9995.model filter=lfs diff=lfs merge=lfs -text
